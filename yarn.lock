@@ -284,7 +284,11 @@ minecraft-protocol@^1.26.5:
     uuid-1345 "^1.0.1"
     yggdrasil "^1.4.0"
 
+<<<<<<< HEAD
 mineflayer-pathfinder@^1.9.1:
+=======
+mineflayer-pathfinder@^1.8.0:
+>>>>>>> refs/remotes/origin/master
   version "1.9.1"
   resolved "https://registry.yarnpkg.com/mineflayer-pathfinder/-/mineflayer-pathfinder-1.9.1.tgz#c9fea961b8f6fb48c81ba7c31e98bd37d07ea294"
   integrity sha512-4mslXjn7NU5NNXUsYfieQwaycUzAg9Henzqs/ZaBT1Hc53VwmsQK1M2TEqFCOwdU8Q6Urk0LcY/87SBPIz8BZQ==
@@ -316,7 +320,11 @@ mineflayer@^4.0.0:
     prismarine-windows "^2.4.2"
     prismarine-world "^3.6.0"
     protodef "^1.14.0"
+<<<<<<< HEAD
     typed-emitter "^1.0.0"
+=======
+    typed-emitter "^1.3.1"
+>>>>>>> refs/remotes/origin/master
     vec3 "^0.1.7"
 
 mojangson@^2.0.1:
