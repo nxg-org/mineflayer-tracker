@@ -10,12 +10,6 @@ declare module "mineflayer" {
         projectiles: ProjectileTracker;
 
     }
-    interface BotEvents {
-        attackedTarget: (target: Entity) => void;
-        stoppedAttacking: () => void;
-        startedAttacking: (target: Entity) => void;
-        targetBlockingUpdate: (target: Entity, blocking: boolean) => void;
-    }
 }
 
 export default function plugin(bot: Bot) {

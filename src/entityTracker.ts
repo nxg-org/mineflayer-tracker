@@ -15,7 +15,8 @@ export class EntityTracker {
     public trackingData: TrackingData = {};
 
     constructor(private bot: Bot) {
-        bot.on('physicsTick', this.hawkeyeRewriteTracking.bind(this));
+        // bot.on("entityMoved", this.hawkeyeRewriteTracking);
+        bot.on("physicsTick", this.hawkeyeRewriteTracking);
         // bot._client.on("rel_entity_move", this.test.bind(this));
     }
 
@@ -40,32 +41,31 @@ export class EntityTracker {
         if (testVel !== this.trackingData[entityId].info.avgSpeed) this.trackingData[entityId].info.avgSpeed = testVel;
     }
 
-
-    private hawkeyeRewriteTracking() {
-        
+    private hawkeyeRewriteTracking = () => {
+        // const entityId = entity.id;
+        // const e = this.trackingData[entity.id];
         for (const entityId in this.trackingData) {
             if (!this.trackingData[entityId].tracking) continue;
             const entity = this.bot.entities[entityId]; //bot.entities[entityId]
 
-            
-            if (!entity) continue
-  
+            // if (!e) return;
+            if (!entity) continue;
 
-            const currentPos = entity.position.clone()
+            const currentPos = entity.position.clone();
             if (this.trackingData[entityId].info.tickInfo.length > 0) {
-
-               
-                const shiftPos = currentPos.clone().subtract(this.trackingData[entityId].info.tickInfo[this.trackingData[entityId].info.tickInfo.length- 1].position)
+                const shiftPos = currentPos
+                    .clone()
+                    .subtract(this.trackingData[entityId].info.tickInfo[this.trackingData[entityId].info.tickInfo.length - 1].position);
                 // if (shiftPos.equals(emptyVec)) {
                 //     this.trackingData[entityId].info.tickInfo = []; //clear all entries.
                 // }
                 if (!shiftPos.equals(emptyVec) && !this.trackingData[entityId].info.avgSpeed.equals(emptyVec)) {
-                    const oldYaw = dirToYawAndPitch(this.trackingData[entityId].info.avgSpeed).yaw
-                    const newYaw = dirToYawAndPitch(shiftPos).yaw
-                    const dif = Math.abs(oldYaw - newYaw)
-                    if (dif > Math.PI / 4 && dif < 11 * Math.PI / 4) this.trackingData[entityId].info.tickInfo = [this.trackingData[entityId].info.tickInfo.pop()!];
+                    const oldYaw = dirToYawAndPitch(this.trackingData[entityId].info.avgSpeed).yaw;
+                    const newYaw = dirToYawAndPitch(shiftPos).yaw;
+                    const dif = Math.abs(oldYaw - newYaw);
+                    if (dif > Math.PI / 4 && dif < (11 * Math.PI) / 4)
+                        this.trackingData[entityId].info.tickInfo = [this.trackingData[entityId].info.tickInfo.pop()!];
                 }
-      
             }
 
             if (this.trackingData[entityId].info.tickInfo.length > 10) {
@@ -74,7 +74,7 @@ export class EntityTracker {
 
             this.trackingData[entityId].info.tickInfo.push({ position: currentPos.clone(), velocity: entity.velocity.clone() });
             const speed = new Vec3(0, 0, 0);
-            const length = this.trackingData[entityId].info.tickInfo.length
+            const length = this.trackingData[entityId].info.tickInfo.length;
 
             for (let i = 1; i < length; i++) {
                 const pos = this.trackingData[entityId].info.tickInfo[i].position;
@@ -93,7 +93,7 @@ export class EntityTracker {
 
             if (speed !== this.trackingData[entityId].info.avgSpeed) this.trackingData[entityId].info.avgSpeed = speed;
         }
-    }
+    };
 
     public trackEntity(entity: Entity) {
         if (this.trackingData[entity.id]) this.trackingData[entity.id].tracking = true;
