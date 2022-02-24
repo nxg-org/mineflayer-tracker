@@ -7,6 +7,8 @@ import { MovementReader } from "./movementReader";
 import { MovementSimulations } from "./dist/physics/sims/nextSim";
 import { EntityState } from "./dist/physics/states/entityState";
 import { PlayerState } from "./dist/physics/states/playerState";
+import { Physics } from "./dist/physics/engines/physics";
+import { PlayerControls } from "./dist/physics/player/playerControls";
 
 declare module "mineflayer" {
     interface Bot {
@@ -28,6 +30,6 @@ export { ProjectileTracker };
 export { MovementSimulations };
 
 //temporary.
-export { EntityState, PlayerState };
+export { EntityState, PlayerState, Physics, PlayerControls };
 
 // export { MovementReader };
