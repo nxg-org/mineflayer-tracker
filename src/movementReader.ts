@@ -1,13 +1,13 @@
-import { Physics } from "./lib/physics/engines/physics";
-import { MovementSimulations } from "./lib/physics/sims/nextSim";
+import { Physics } from "./dist/physics/engines/physics";
+import { MovementSimulations } from "./dist/physics/sims/nextSim";
 import registry from "prismarine-registry";
 import { Bot } from "mineflayer";
 import { Vec3 } from "vec3";
 import { Entity } from "prismarine-entity";
 import { promisify } from "util";
 import { dirToYawAndPitch } from "./mathUtils";
-import { EntityState } from "./lib/physics/states/entityState";
-import { StateStorage } from "./lib/storage/stateStorage";
+import { EntityState } from "./dist/physics/states/entityState";
+import { StateStorage } from "./dist/storage/stateStorage";
 import { MathUtils } from "@nxg-org/mineflayer-util-plugin";
 
 const sleep = promisify(setTimeout);

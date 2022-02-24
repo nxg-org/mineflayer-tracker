@@ -4,9 +4,9 @@ import { ProjectileTracker } from "./projectileTracker";
 import { Bot } from "mineflayer";
 import { Entity } from "prismarine-entity";
 import { MovementReader } from "./movementReader";
-import { MovementSimulations } from "./lib/physics/sims/nextSim";
-import { EntityState } from "./lib/physics/states/entityState";
-import { PlayerState } from "./lib/physics/states/playerState";
+import { MovementSimulations } from "./dist/physics/sims/nextSim";
+import { EntityState } from "./dist/physics/states/entityState";
+import { PlayerState } from "./dist/physics/states/playerState";
 
 declare module "mineflayer" {
     interface Bot {
