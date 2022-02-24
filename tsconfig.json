@@ -14,7 +14,4 @@
     "outDir": "lib/",
     "lib": ["es6", "dom", "es2019"],
   },
-  "include": [
-    "src/lib/"
-  ]
 }
