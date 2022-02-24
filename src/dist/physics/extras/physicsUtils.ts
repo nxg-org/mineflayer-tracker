@@ -5,7 +5,7 @@ import { Block } from "prismarine-block";
 import { Entity } from "prismarine-entity";
 import { promisify } from "util";
 import { Vec3 } from "vec3";
-import features from "../lib/features.json";
+import features from "../distTwo/features.json";
 import { PlayerState } from "../states/playerState";
 
 export function makeSupportFeature(mcData: md.IndexedData) {

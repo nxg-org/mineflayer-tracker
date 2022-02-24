@@ -1,9 +1,9 @@
 import { Vec3 } from "vec3";
 import { AABB } from "@nxg-org/mineflayer-util-plugin";
 import md, { Effects, Enchantments } from "minecraft-data";
-import * as math from "../lib/math";
-import * as attributes from "../lib/attributes";
-import * as features from "../lib/features.json";
+import * as math from "../distTwo/math";
+import * as attributes from "../distTwo/attributes";
+import * as features from "../distTwo/features.json";
 import { Effect, Entity } from "prismarine-entity";
 import { Bot, Enchantment } from "mineflayer";
 import { Block } from "prismarine-block";
