@@ -54,7 +54,6 @@ export class EntityTracker {
             const currentPos = entity.position.clone();
             if (this.trackingData[entityId].info.tickInfo.length > 0) {
                 const shiftPos = currentPos
-                    .clone()
                     .subtract(this.trackingData[entityId].info.tickInfo[this.trackingData[entityId].info.tickInfo.length - 1].position);
                 // if (shiftPos.equals(emptyVec)) {
                 //     this.trackingData[entityId].info.tickInfo = []; //clear all entries.
@@ -110,11 +109,11 @@ export class EntityTracker {
         }
     }
 
-    public getEntitySpeed(entity: Entity): Vec3 {
-        return this.trackingData[entity.id].info.avgSpeed;
+    public getEntitySpeed(entity: Entity): Vec3 | null {
+        return this.trackingData[entity.id] ? this.trackingData[entity.id].info.avgSpeed : null;
     }
 
-    public getEntityPositionInfo(entity: Entity) {
-        return this.trackingData[entity.id].info.tickInfo;
+    public getEntityPositionInfo(entity: Entity): { position: Vec3; velocity: Vec3 }[] {
+        return this.trackingData[entity.id] ? this.trackingData[entity.id].info.tickInfo : [];
     }
 }
