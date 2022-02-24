@@ -28,14 +28,26 @@ bot.on("chat", async (u, m) => {
     const msg = m.split(" ");
     let target = fetchEntity(bot, msg[1], u);
     switch (msg[0]) {
+        case "jump": 
+            for (let i = 0; i < 12; i++) {
+                bot.setControlState("jump", true);
+                await bot.waitForTicks(1)
+                console.log(bot.entity.position, bot.entity.velocity)
+            }
+            break;
         case "track":
             if (!target) return bot.chat("No target found.");
-            bot.inputReader.trackEntity(target)
+            bot.tracker.trackEntity(target)
+
             while (true) {
-                // console.log(await bot.inputReader.getCorrectMovement(target))
-                await bot.inputReader.getCorrectMovement(target)
-                await bot.waitForTicks(1);
+                
             }
+            // bot.inputReader.trackEntity(target)
+            // while (true) {
+            //     console.log(await bot.inputReader.getCorrectMovement(target))
+            //     // await bot.inputReader.getCorrectMovement(target)
+            //     await bot.waitForTicks(1);
+            // }
             break;
         case "stop":
             break;
