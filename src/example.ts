@@ -5,13 +5,16 @@ import { Vec3 } from "vec3";
 
 const bot = createBot({
     username: "tracker-test",
-    host: "minecraft.next-gen.dev",
+    host: "localhost",
     port: 25565,
-    version: "1.17.1",
 });
 
-bot.physics.yawSpeed = 50;
 
+bot.on("spawn", () => {
+    bot.physics.yawSpeed = 50;
+
+
+})
 bot.loadPlugin(utilPlugin);
 bot.loadPlugin(tracker);
 
@@ -39,8 +42,13 @@ bot.on("chat", async (u, m) => {
             if (!target) return bot.chat("No target found.");
             bot.tracker.trackEntity(target)
 
+            let lastPos = new Vec3(0, 0, 0);
             while (true) {
-                
+                // bot.tracker.getEntitySpeed(target)
+                console.log(bot.tracker.getEntitySpeed(target), target.position.minus(lastPos));
+                await bot.waitForTicks(1);
+
+                lastPos = target.position.clone();
             }
             // bot.inputReader.trackEntity(target)
             // while (true) {
