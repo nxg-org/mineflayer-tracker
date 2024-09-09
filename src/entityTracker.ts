@@ -14,11 +14,23 @@ export type TrackingData = {
 export class EntityTracker {
   public trackingData: TrackingData = {};
 
+  private _enabled = false;
+
+  public get enabled() {
+    return this._enabled;
+  }
+
+  public set enabled(value: boolean) {
+    if (value === this._enabled) return;
+
+    if (value) this.bot.on("physicsTick", this.hawkeyeRewriteTracking);
+    else this.bot.off("physicsTick", this.hawkeyeRewriteTracking);
+
+    this._enabled = value;
+  }
+
   constructor(private bot: Bot) {
-    // bot.on("entityMoved", this.test);
-    // bot.on("entity")
-    bot.on("physicsTick", this.hawkeyeRewriteTracking);
-    // bot._client.on("rel_entity_move", this.test);
+    this.enabled = true; // turns on the tracking
   }
 
   private test = (packet: Entity) => {
@@ -83,7 +95,7 @@ export class EntityTracker {
 
         if (shiftPos.equals(emptyVec)) {
           this.trackingData[entityId].info.tickInfo = [{ position: currentPos, velocity: entity.velocity.clone() }];
-          this.trackingData[entityId].info.avgSpeed = emptyVec; 
+          this.trackingData[entityId].info.avgSpeed = emptyVec;
           continue;
         }
 
@@ -146,5 +158,17 @@ export class EntityTracker {
 
   public clearTrackingData() {
     this.trackingData = {};
+  }
+
+  public update() {
+    this.hawkeyeRewriteTracking();
+  }
+
+  public enable() {
+    this.enabled = true;
+  }
+
+  public disable() {
+    this.enabled = false;
   }
 }
