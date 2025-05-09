@@ -1,5 +1,5 @@
-import { Physics } from "./dist/physics/engines/physics";
-import { MovementSimulations } from "./dist/physics/sims/nextSim";
+
+import { MovementSimulations } from "./sims/nextSim";
 import registry from "prismarine-registry";
 import { Bot } from "mineflayer";
 import { Vec3 } from "vec3";
