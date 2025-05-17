@@ -2,9 +2,8 @@ import utilPlugin from "@nxg-org/mineflayer-util-plugin";
 import { EntityTracker } from "./entityTracker";
 import { ProjectileTracker } from "./projectileTracker";
 import { Bot } from "mineflayer";
-import { Entity } from "prismarine-entity";
-import { MovementReader } from "./movementReader";
-import { MovementSimulations } from "./sims/nextSim";
+// import { MovementReader } from "./movementReader";
+import { MovementSimulations } from "./dist/sims/nextSim";
 
 declare module "mineflayer" {
     interface Bot {
