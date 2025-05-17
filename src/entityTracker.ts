@@ -113,19 +113,19 @@ export class EntityTracker {
 
       
       if (info.tickInfo.length > 0) {
-        console.log(info.tickInfo.length, this._tickAge, info.tickInfo[info.tickInfo.length - 1]?.age, currentPos.toString(), entity.velocity.toString())
+        // console.log(info.tickInfo.length, this._tickAge, info.tickInfo[info.tickInfo.length - 1]?.age, currentPos.toString(), entity.velocity.toString())
 
         const shiftInfo = info.tickInfo[info.tickInfo.length - 1];
         const shiftPos = currentPos.minus(shiftInfo.position);
 
         // console.log(info.tickInfo.length, shiftInfo.age, this._tickAge, shiftPos.toString(), shiftInfo.position.toString(), currentPos.toString())
         if (shiftPos.equals(emptyVec) &&  this._tickAge - shiftInfo.age > 1) {
-          console.log('equal pos and we have not received info, clearing cache.')
+          // console.log('equal pos and we have not received info, clearing cache.')
           info.tickInfo = [{ position: currentPos, velocity: entity.velocity.clone(), age: this._tickAge }];
           info.avgVel = emptyVec;
           continue;
         } else if (shiftPos.equals(emptyVec)) {
-          console.log('equal pos but maybe not received info')
+          // console.log('equal pos but maybe not received info')
           continue;
         }
 
