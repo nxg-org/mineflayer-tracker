@@ -1,6 +1,6 @@
 import { Bot, createBot, EquipmentDestination } from "mineflayer";
 import utilPlugin from "@nxg-org/mineflayer-util-plugin";
-import tracker from "./index";
+import tracker from "../src/index";
 import { Vec3 } from "vec3";
 
 const bot = createBot({
@@ -45,7 +45,7 @@ bot.on("chat", async (u, m) => {
             let lastPos = new Vec3(0, 0, 0);
             while (true) {
                 // bot.tracker.getEntitySpeed(target)
-                console.log(bot.tracker.getEntitySpeed(target), target.position.minus(lastPos));
+                console.log(target.position, bot.tracker.getEntitySpeed(target), target.position.minus(lastPos));
                 await bot.waitForTicks(1);
 
                 lastPos = target.position.clone();

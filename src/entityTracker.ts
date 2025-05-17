@@ -7,14 +7,16 @@ import { dirToYawAndPitch, pointToYawAndPitch } from "./mathUtils";
 const sleep = promisify(setTimeout);
 const emptyVec = new Vec3(0, 0, 0);
 
+type TrackingInfo =  { position: Vec3; velocity: Vec3; age: number }
 export type TrackingData = {
-  [entityId: number]: { tracking: boolean; info: { avgSpeed: Vec3; tickInfo: { position: Vec3; velocity: Vec3 }[] } };
+  [entityId: number]: { tracking: boolean; info: { avgVel: Vec3; tickInfo:TrackingInfo[] } };
 };
 
 export class EntityTracker {
   public trackingData: TrackingData = {};
 
   private _enabled = false;
+  private _tickAge = 0;
 
   public get enabled() {
     return this._enabled;
@@ -33,109 +35,165 @@ export class EntityTracker {
     this.enabled = true; // turns on the tracking
   }
 
-  private test = (packet: Entity) => {
-    const entityId = packet.id;
-    // const testVel = new Vec3(packet.dX / 8000, 0, packet.dZ / 8000);
-    if (!this.trackingData[entityId]?.tracking) return;
+  // private test = (packet: Entity) => {
+  //   const entityId = packet.id;
+  //   const entry = this.trackingData[entityId];
+  //   if (!entry?.tracking) return;
 
-    const entity = this.bot.entities[entityId]; //bot.entities[entityId]
-    if (!entity) return;
+  //   const entity = this.bot.entities[entityId];
+  //   if (!entity) return;
 
-    const currentPos = entity.position.clone();
-    const info = this.trackingData[entityId].info;
-    if (info.tickInfo.length > 0) {
-      const shiftPos = currentPos.minus(info.tickInfo[info.tickInfo.length - 1].position);
+  //   const currentPos = entity.position.clone();
+  //   const info = entry.info;
 
-      if (!shiftPos.equals(emptyVec) && !info.avgSpeed.equals(emptyVec)) {
-        const oldYaw = dirToYawAndPitch(info.avgSpeed).yaw;
-        const newYaw = dirToYawAndPitch(shiftPos).yaw;
-        const dif = Math.abs(oldYaw - newYaw);
-        if (dif > Math.PI / 4 && dif < (11 * Math.PI) / 4) this.trackingData[entityId].info.tickInfo = [info.tickInfo.pop()!];
-      }
-    }
+  //   // If we have at least one prior tick, compute the shift
+  //   if (info.tickInfo.length > 0) {
+  //     const lastPos = info.tickInfo[info.tickInfo.length - 1].position;
+  //     const shiftPos = currentPos.minus(lastPos);
 
-    if (info.tickInfo.length > 10) {
-      this.trackingData[entityId].info.tickInfo.shift();
-    }
+  //     // If there's no movement, reset history and avgSpeed, then bail out
+  //     if (shiftPos.equals(emptyVec)) {
+  //       info.tickInfo = [{ position: currentPos, velocity: entity.velocity.clone(), age: this._tickAge }];
+  //       info.avgSpeed = emptyVec;
+  //       return;
+  //     }
 
-    this.trackingData[entityId].info.tickInfo.push({ position: currentPos, velocity: entity.velocity.clone() });
-    const speed = new Vec3(0, 0, 0);
-    const length = this.trackingData[entityId].info.tickInfo.length;
+  //     // If the direction changed sharply, prune the history to just the last point
+  //     if (!info.avgSpeed.equals(emptyVec)) {
+  //       const oldYaw = dirToYawAndPitch(info.avgSpeed).yaw;
+  //       const newYaw = dirToYawAndPitch(shiftPos).yaw;
+  //       const dif = Math.abs(oldYaw - newYaw);
+  //       if (dif > Math.PI / 4 && dif < (11 * Math.PI) / 4) {
+  //         // keep only the very last tick before current
+  //         const last = info.tickInfo.pop()!;
+  //         info.tickInfo = [last];
+  //       }
+  //     }
+  //   }
 
-    for (let i = 1; i < length; i++) {
-      const pos = this.trackingData[entityId].info.tickInfo[i].position;
-      const prevPos = this.trackingData[entityId].info.tickInfo[i - 1].position;
-      speed.x += pos.x - prevPos.x;
-      speed.y += pos.y - prevPos.y;
-      speed.z += pos.z - prevPos.z;
-    }
+  //   // Cap history length at 10
+  //   if (info.tickInfo.length > 10) {
+  //     info.tickInfo.shift();
+  //   }
 
-    speed.x = speed.x / length;
-    speed.y = speed.y / length;
-    speed.z = speed.z / length;
+  //   // Record the new sample
+  //   info.tickInfo.push({ position: currentPos, velocity: entity.velocity.clone(), age: this._tickAge });
 
-    if (!speed.equals(this.trackingData[entityId].info.avgSpeed)) this.trackingData[entityId].info.avgSpeed = speed;
-  };
+  //   // Recompute average speed over history
+  //   const speed = new Vec3(0, 0, 0);
+  //   const len = info.tickInfo.length;
+  //   for (let i = 1; i < len; i++) {
+  //     const curr = info.tickInfo[i].position;
+  //     const prev = info.tickInfo[i - 1].position;
+  //     speed.x += curr.x - prev.x;
+  //     speed.y += curr.y - prev.y;
+  //     speed.z += curr.z - prev.z;
+  //   }
+  //   speed.x /= len;
+  //   speed.y /= len;
+  //   speed.z /= len;
+
+  //   // Update avgSpeed if it has changed
+  //   if (!speed.equals(info.avgSpeed)) {
+  //     info.avgSpeed = speed;
+  //   }
+  // };
 
   private hawkeyeRewriteTracking = () => {
-    // const entityId = entity.id;
-    // const e = this.trackingData[entity.id];
+    this._tickAge++;
     for (const entityId in this.trackingData) {
       if (!this.trackingData[entityId].tracking) continue;
       const entity = this.bot.entities[entityId]; //bot.entities[entityId]
 
       // if (!e) return;
       if (!entity) continue;
+      const info = this.trackingData[entityId].info;
 
       const currentPos = entity.position.clone();
-      if (this.trackingData[entityId].info.tickInfo.length > 0) {
-        const shiftPos = currentPos.minus(
-          this.trackingData[entityId].info.tickInfo[this.trackingData[entityId].info.tickInfo.length - 1].position
-        );
 
-        if (shiftPos.equals(emptyVec)) {
-          this.trackingData[entityId].info.tickInfo = [{ position: currentPos, velocity: entity.velocity.clone() }];
-          this.trackingData[entityId].info.avgSpeed = emptyVec;
+      
+      if (info.tickInfo.length > 0) {
+        console.log(info.tickInfo.length, this._tickAge, info.tickInfo[info.tickInfo.length - 1]?.age, currentPos.toString(), entity.velocity.toString())
+
+        const shiftInfo = info.tickInfo[info.tickInfo.length - 1];
+        const shiftPos = currentPos.minus(shiftInfo.position);
+
+        // console.log(info.tickInfo.length, shiftInfo.age, this._tickAge, shiftPos.toString(), shiftInfo.position.toString(), currentPos.toString())
+        if (shiftPos.equals(emptyVec) &&  this._tickAge - shiftInfo.age > 1) {
+          console.log('equal pos and we have not received info, clearing cache.')
+          info.tickInfo = [{ position: currentPos, velocity: entity.velocity.clone(), age: this._tickAge }];
+          info.avgVel = emptyVec;
+          continue;
+        } else if (shiftPos.equals(emptyVec)) {
+          console.log('equal pos but maybe not received info')
           continue;
         }
 
-        if (!shiftPos.equals(emptyVec) && !this.trackingData[entityId].info.avgSpeed.equals(emptyVec)) {
-          const oldYaw = dirToYawAndPitch(this.trackingData[entityId].info.avgSpeed).yaw;
+        if (!shiftPos.equals(emptyVec) && !info.avgVel.equals(emptyVec)) {
+          const oldYaw = dirToYawAndPitch(info.avgVel).yaw;
           const newYaw = dirToYawAndPitch(shiftPos).yaw;
           const dif = Math.abs(oldYaw - newYaw);
           if (dif > Math.PI / 4 && dif < (11 * Math.PI) / 4) {
-            this.trackingData[entityId].info.tickInfo = [this.trackingData[entityId].info.tickInfo.pop()!];
+            info.tickInfo = [info.tickInfo.pop()!];
           }
         }
       }
 
-      if (this.trackingData[entityId].info.tickInfo.length > 10) {
-        this.trackingData[entityId].info.tickInfo.shift();
+      if (info.tickInfo.length > 10) {
+        info.tickInfo.shift();
       }
 
-      this.trackingData[entityId].info.tickInfo.push({ position: currentPos, velocity: entity.velocity.clone() });
-      const speed = new Vec3(0, 0, 0);
-      const length = this.trackingData[entityId].info.tickInfo.length;
+      const length = info.tickInfo.length;
+      info.tickInfo.push({ position: currentPos, velocity: entity.velocity.clone(), age: this._tickAge });
+      const vel = new Vec3(0, 0, 0);
 
-      for (let i = 1; i < length; i++) {
-        const pos = this.trackingData[entityId].info.tickInfo[i].position;
-        const prevPos = this.trackingData[entityId].info.tickInfo[i - 1].position;
-        speed.x += pos.x - prevPos.x;
-        speed.y += pos.y - prevPos.y;
-        speed.z += pos.z - prevPos.z;
+      const divLength = length;
+
+      const handleTimeDifferential = (selector: 'x' | 'y' | 'z', curPos:TrackingInfo, prevPos: TrackingInfo ) => {
+        const first = curPos.position[selector];
+        const second = prevPos.position[selector];
+
+        const firstAge = curPos.age;
+        const secondAge = prevPos.age;
+
+        if (length === 1) {
+          return first - second;
+        }
+        return (first - second) / (firstAge - secondAge);
       }
 
-      speed.x = speed.x / length;
-      speed.y = speed.y / length;
-      speed.z = speed.z / length;
+      // average X and Z over found differential.
+      for (let i = 1; i < length + 1; i++) {
+        vel.x += handleTimeDifferential('x', info.tickInfo[i], info.tickInfo[i - 1]);
+        vel.z += handleTimeDifferential('z', info.tickInfo[i], info.tickInfo[i - 1]);
+        // vel.y += pos.y - prevPos.y;
+      }
 
-      if (!speed.equals(this.trackingData[entityId].info.avgSpeed)) this.trackingData[entityId].info.avgSpeed = speed;
+      vel.x = vel.x / divLength;
+      vel.z = vel.z / divLength;
+      // vel.y = speed.y / divLength;
+
+
+      // now, since calculating the impulse of Y is hard, we just take the difffence between the last tick and the current one.
+      const prevTick = info.tickInfo[info.tickInfo.length - 2];
+      if (!prevTick) vel.y = 0;
+      else {
+        // if the current measurement is at a whole integer, set vel.y to 0. this is because we're collided with a block.
+        const currentY = Math.floor(currentPos.y);
+        if (currentY === currentPos.y) vel.y = 0;
+        else {
+          vel.y = handleTimeDifferential('y', info.tickInfo[info.tickInfo.length - 1], info.tickInfo[info.tickInfo.length - 2]);
+        }
+       
+      }
+
+      if (!vel.equals(info.avgVel)) info.avgVel = vel;
     }
   };
 
   public trackEntity(entity: Entity) {
     if (this.trackingData[entity.id]) this.trackingData[entity.id].tracking = true;
-    this.trackingData[entity.id] ??= { tracking: true, info: { avgSpeed: emptyVec, tickInfo: [] } };
+    this.trackingData[entity.id] ??= { tracking: true, info: { avgVel: emptyVec, tickInfo: [] } };
   }
 
   public stopTrackingEntity(entity: Entity, clear: boolean = false) {
@@ -149,7 +207,7 @@ export class EntityTracker {
   }
 
   public getEntitySpeed(entity: Entity): Vec3 | null {
-    return this.trackingData[entity.id] ? this.trackingData[entity.id].info.avgSpeed : null;
+    return this.trackingData[entity.id] ? this.trackingData[entity.id].info.avgVel : null;
   }
 
   public getEntityPositionInfo(entity: Entity): { position: Vec3; velocity: Vec3 }[] {

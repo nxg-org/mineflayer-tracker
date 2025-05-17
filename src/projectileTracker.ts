@@ -115,7 +115,7 @@ export class ProjectileTracker {
         const hittingArrows = [];
         const aabbComponents = { position: this.bot.entity.position, height: this.bot.entity.height + 0.18, width: 0.6 };
         for (const entity of Object.values(this.bot.entities).filter(
-            (e) => e.name === ("skeleton" || e.name === "piglin") && e.heldItem?.name.includes("bow")
+            (e) => (e.name === "skeleton" || e.name === "piglin") && e.heldItem?.name.includes("bow")
         )) {
             const init = ShotFactory.fromMob(entity, this.intercepter);
             const info = init.hitsEntity(aabbComponents);
