@@ -9,7 +9,7 @@ const emptyVec = new Vec3(0, 0, 0);
 
 type TrackingInfo =  { position: Vec3; velocity: Vec3; age: number }
 export type TrackingData = {
-  [entityId: number]: { tracking: boolean; info: { avgVel: Vec3; tickInfo:TrackingInfo[] } };
+  [entityId: number]: { tracking: boolean; info: { initialAge: number, avgVel: Vec3; tickInfo:TrackingInfo[],  } };
 };
 
 export class EntityTracker {
@@ -115,23 +115,25 @@ export class EntityTracker {
       if (info.tickInfo.length > 0) {
         // console.log(info.tickInfo.length, this._tickAge, info.tickInfo[info.tickInfo.length - 1]?.age, currentPos.toString(), entity.velocity.toString())
 
-        const shiftInfo = info.tickInfo[info.tickInfo.length - 1];
-        const shiftPos = currentPos.minus(shiftInfo.position);
+        const prevInfo = info.tickInfo[info.tickInfo.length - 1];
+        const prevPos = currentPos.minus(prevInfo.position);
 
         // console.log(info.tickInfo.length, shiftInfo.age, this._tickAge, shiftPos.toString(), shiftInfo.position.toString(), currentPos.toString())
-        if (shiftPos.equals(emptyVec) &&  this._tickAge - shiftInfo.age > 1) {
+        if (prevPos.equals(emptyVec) &&  info.initialAge - prevInfo.age > 1) {
           // console.log('equal pos and we have not received info, clearing cache.')
           info.tickInfo = [{ position: currentPos, velocity: entity.velocity.clone(), age: this._tickAge }];
+          info.initialAge = this._tickAge
           info.avgVel = emptyVec;
           continue;
-        } else if (shiftPos.equals(emptyVec)) {
+        } else if (prevPos.equals(emptyVec)) {
+          info.initialAge = this._tickAge
           // console.log('equal pos but maybe not received info')
           continue;
         }
 
-        if (!shiftPos.equals(emptyVec) && !info.avgVel.equals(emptyVec)) {
+        if (!prevPos.equals(emptyVec) && !info.avgVel.equals(emptyVec)) {
           const oldYaw = dirToYawAndPitch(info.avgVel).yaw;
-          const newYaw = dirToYawAndPitch(shiftPos).yaw;
+          const newYaw = dirToYawAndPitch(prevPos).yaw;
           const dif = Math.abs(oldYaw - newYaw);
           if (dif > Math.PI / 4 && dif < (11 * Math.PI) / 4) {
             info.tickInfo = [info.tickInfo.pop()!];
@@ -143,11 +145,16 @@ export class EntityTracker {
         info.tickInfo.shift();
       }
 
-      const length = info.tickInfo.length;
-      info.tickInfo.push({ position: currentPos, velocity: entity.velocity.clone(), age: this._tickAge });
+
+      const curInfo = { position: currentPos, velocity: entity.velocity.clone(), age: this._tickAge };
+      const prevInfo = info.tickInfo[info.tickInfo.length - 1];
       const vel = new Vec3(0, 0, 0);
 
+      const length = info.tickInfo.length;
       const divLength = length;
+
+      if (length === 0)  info.initialAge = this._tickAge;
+      info.tickInfo.push(curInfo);
 
       const handleTimeDifferential = (selector: 'x' | 'y' | 'z', curPos:TrackingInfo, prevPos: TrackingInfo ) => {
         const first = curPos.position[selector];
@@ -175,14 +182,14 @@ export class EntityTracker {
 
 
       // now, since calculating the impulse of Y is hard, we just take the difffence between the last tick and the current one.
-      const prevTick = info.tickInfo[info.tickInfo.length - 2];
-      if (!prevTick) vel.y = 0;
+
+      if (!prevInfo) vel.y = 0;
       else {
         // if the current measurement is at a whole integer, set vel.y to 0. this is because we're collided with a block.
         const currentY = Math.floor(currentPos.y);
         if (currentY === currentPos.y) vel.y = 0;
         else {
-          vel.y = handleTimeDifferential('y', info.tickInfo[info.tickInfo.length - 1], info.tickInfo[info.tickInfo.length - 2]);
+          vel.y = handleTimeDifferential('y', curInfo, prevInfo);
         }
        
       }
@@ -193,7 +200,7 @@ export class EntityTracker {
 
   public trackEntity(entity: Entity) {
     if (this.trackingData[entity.id]) this.trackingData[entity.id].tracking = true;
-    this.trackingData[entity.id] ??= { tracking: true, info: { avgVel: emptyVec, tickInfo: [] } };
+    this.trackingData[entity.id] ??= { tracking: true, info: { avgVel: emptyVec, tickInfo: [], initialAge: 0 } };
   }
 
   public stopTrackingEntity(entity: Entity, clear: boolean = false) {

@@ -38,6 +38,15 @@ bot.on("chat", async (u, m) => {
                 console.log(bot.entity.position, bot.entity.velocity)
             }
             break;
+
+        case "selftrack": {
+            bot.on('physicsTick', () => {
+                console.log("tick", bot.entity.position, bot.entity.velocity)
+            })
+            bot.setControlState('forward', true)
+            bot.setControlState('sprint', true)
+            break;
+        }
         case "track":
             if (!target) return bot.chat("No target found.");
             bot.tracker.trackEntity(target)
