@@ -11,6 +11,10 @@
         "type": "git",
         "url": "git+https://github.com/nxg-org/mineflayer-tracker.git"
     },
+    "publishConfig": {
+        "registry": "https://registry.npmjs.org/",
+        "access": "public"
+    },
     "license": "GPL-3.0",
     "author": "generel_schwerz",
     "main": "lib/index.js",
