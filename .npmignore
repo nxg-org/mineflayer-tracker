@@ -3,3 +3,5 @@
 .github/
 src/
 tsconfig.json
+pnpm-lock.yaml
+package-lock.yaml
