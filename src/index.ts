@@ -12,7 +12,7 @@ declare module "mineflayer" {
     interface Bot {
         // inputReader: MovementReader;
         physicsUtil?: PhysicsUtilWrapper;
-        tracker: EntityTracker;
+        tracker: EntityTrackerCurvature;
         trackerOld: EntityTrackerOld;
         projectiles: ProjectileTracker;
     }
@@ -20,7 +20,7 @@ declare module "mineflayer" {
 
 export default function plugin(bot: Bot) {
     if (!bot.util) bot.loadPlugin(utilPlugin);
-    bot.tracker = new EntityTracker(bot);
+    bot.tracker = new EntityTrackerCurvature(bot);
     bot.trackerOld = new EntityTrackerOld(bot);
     bot.projectiles = new ProjectileTracker(bot);
     // bot.inputReader = new MovementReader(bot);

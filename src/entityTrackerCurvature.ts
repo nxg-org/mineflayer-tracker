@@ -6,8 +6,8 @@ import { dirToYawAndPitch } from "./mathUtils";
 
 const emptyVec = new Vec3(0, 0, 0);
 const DEFAULT_CONFIG = {
-  maxHistory: 10,
-  featureWindow: 5,
+  maxHistory: 20,
+  featureWindow: 10,
   directionBreakThreshold: Math.PI / 2,
   minPlanarSpeed: 1e-4,
   minTurnRate: Math.PI / 180,
@@ -71,8 +71,8 @@ export class EntityTrackerCurvature {
     this.enabled = true;
   }
 
-  private logDebug(event: string, details: Record<string, unknown>) {
-    if (!this.debugLogging) return;
+  private logDebug(event: string, details: Record<string, unknown>, override = false) {
+    if (!this.debugLogging && !override) return;
     console.log(`[EntityTrackerCurvature:${event}]`, details);
   }
 
@@ -120,6 +120,46 @@ export class EntityTrackerCurvature {
     return Math.abs(deltaY) <= 1e-9 ? -0.078 : deltaY;
   }
 
+  private getPlanarAcceleration(samples: VelocitySample[]): Vec3 | null {
+    if (samples.length < 2) return null;
+
+    let totalAccelX = 0;
+    let totalAccelZ = 0;
+    let count = 0;
+
+    for (let i = 1; i < samples.length; i++) {
+      const prev = samples[i - 1];
+      const curr = samples[i];
+      const dt = curr.dt > 0 ? curr.dt : 1;
+
+      const accelX = (curr.velocity.x - prev.velocity.x) / dt;
+      const accelZ = (curr.velocity.z - prev.velocity.z) / dt;
+
+      totalAccelX += accelX;
+      totalAccelZ += accelZ;
+      count++;
+    }
+
+    if (count === 0) return null;
+    return new Vec3(totalAccelX / count, 0, totalAccelZ / count);
+  }
+
+  private isAccelerationReversing(recentAccel: Vec3 | null, olderAccel: Vec3 | null): boolean {
+    if (!recentAccel || !olderAccel) return false;
+
+    const recentMag = this.getPlanarMagnitude(recentAccel);
+    const olderMag = this.getPlanarMagnitude(olderAccel);
+
+    // Only consider reversals if both accelerations are significant
+    if (recentMag < this.config.minPlanarSpeed * 0.5 || olderMag < this.config.minPlanarSpeed * 0.5) {
+      return false;
+    }
+
+    // Dot product < 0 means opposing directions (reversal)
+    const dotProduct = recentAccel.x * olderAccel.x + recentAccel.z * olderAccel.z;
+    return dotProduct < 0;
+  }
+
   private getSignedTurnRate(samples: VelocitySample[]): number {
     const recent = samples.slice(-this.config.featureWindow);
     if (recent.length < 2) return 0;
@@ -140,6 +180,21 @@ export class EntityTrackerCurvature {
 
     const turnRate = totalTurn / count;
     if (Math.abs(turnRate) < this.config.minTurnRate) {
+      return 0;
+    }
+
+    // Check for acceleration reversals which indicate input changes.
+    const midpoint = Math.floor(recent.length / 2);
+    const recentSamples = recent.slice(midpoint);
+    const olderSamples = recent.slice(0, midpoint);
+
+    const recentAccel = this.getPlanarAcceleration(recentSamples);
+    const olderAccel = this.getPlanarAcceleration(olderSamples);
+
+    // If acceleration is reversing (e.g., quickly switching from left to right input),
+    // keep the direction of the turn but dampen it so we do not over-shoot the
+    // reversal with a fully confident curvature continuation.
+    if (this.isAccelerationReversing(recentAccel, olderAccel)) {
       return 0;
     }
 
