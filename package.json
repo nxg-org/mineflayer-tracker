@@ -19,15 +19,29 @@
     "author": "generel_schwerz",
     "main": "lib/index.js",
     "types": "lib/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./lib/index.d.ts",
+            "require": "./lib/index.js",
+            "default": "./lib/index.js"
+        }
+    },
+    "files": [
+        "lib/**/*",
+        "example/**/*",
+        "README*",
+        "LICENSE*"
+    ],
     "scripts": {
         "build": "npx tsc",
+        "prepare": "npm run build",
         "prepublish": "npm run build",
         "test": "node --trace-warnings lib/example.js tracker-test"
     },
     "dependencies": {
-        "@nxg-org/mineflayer-physics-util": "^1.8.7",
+        "@nxg-org/mineflayer-physics-util": "link:C:\\Users\\owner\\Documents\\github\\mineflayer-physics-utils",
         "@nxg-org/mineflayer-trajectories": "^1.2.1",
-        "@nxg-org/mineflayer-util-plugin": "^1.8.4"
+        "@nxg-org/mineflayer-util-plugin": "^1.9.1"
     },
     "devDependencies": {
         "@types/node": "^22.15.17",

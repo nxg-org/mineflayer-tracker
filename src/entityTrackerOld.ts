@@ -196,7 +196,7 @@ export class EntityTrackerOld {
        
       }
 
-      console.log('computed vel', vel.toString(), 'current vel', entity.velocity.toString(), 'pos', currentPos.toString(), 'age', this._tickAge, 'initialAge', info.initialAge, 'tickInfo length', info.tickInfo.length)
+      // console.log('computed vel', vel.toString(), 'current vel', entity.velocity.toString(), 'pos', currentPos.toString(), 'age', this._tickAge, 'initialAge', info.initialAge, 'tickInfo length', info.tickInfo.length)
 
       if (!vel.equals(info.avgVel)) info.avgVel = vel;
     }

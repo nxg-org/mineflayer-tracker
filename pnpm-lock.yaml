@@ -9,14 +9,14 @@ importers:
   .:
     dependencies:
       '@nxg-org/mineflayer-physics-util':
-        specifier: ^1.8.7
-        version: 1.9.0
+        specifier: link:C:\Users\owner\Documents\github\mineflayer-physics-utils
+        version: link:../mineflayer-physics-utils
       '@nxg-org/mineflayer-trajectories':
         specifier: ^1.2.1
         version: 1.2.1(prismarine-registry@1.12.0)
       '@nxg-org/mineflayer-util-plugin':
-        specifier: ^1.8.4
-        version: 1.8.4
+        specifier: ^1.9.1
+        version: 1.9.1
     devDependencies:
       '@types/node':
         specifier: ^22.15.17
@@ -47,14 +47,11 @@ packages:
     resolution: {integrity: sha512-CO+SE4weOsfJf+C5LM8argzvotrXw252/ZU6SM2Tz63fEblhH1uuVaaO4ISYFuN4Q6BhTo7I3qIdi8ydUQCqhw==}
     engines: {node: '>=16'}
 
-  '@nxg-org/mineflayer-physics-util@1.9.0':
-    resolution: {integrity: sha512-RNV8t7xDmbrmqXNdfObPFmLQyYRjvvDRsPpunrSJBLSWYtOQFOtLvD/xpmhoNtQPrsoncN1KQI8q9Ryuq7KrWg==}
-
   '@nxg-org/mineflayer-trajectories@1.2.1':
     resolution: {integrity: sha512-+9FKhtDrrea+82v4bE+9t1taJVNSF/v7SlXQI0W8L4sHAjN3JpUXJKKIZz7o3xuWkgSK4Nzy7Vliw3d0BZ/XbA==}
 
-  '@nxg-org/mineflayer-util-plugin@1.8.4':
-    resolution: {integrity: sha512-hPaCZxU0Aq+gUSi/l6x7n32hUG6bnDugAMoQXD2dFE/gyNkmRSpmgH5+Y6G41w3H8P3Nl++upGCOlaxvZ7RuoA==}
+  '@nxg-org/mineflayer-util-plugin@1.9.1':
+    resolution: {integrity: sha512-4XxvkxTp90BvnfX8XQKjHId1I/vUdjg1ggz7Tcr+4ieyktbp0Sf7hXPgThy7RziKl1f5+KblnHm407MbNy105A==}
 
   '@types/node-rsa@1.1.4':
     resolution: {integrity: sha512-dB0ECel6JpMnq5ULvpUTunx3yNm8e/dIkv8Zu9p2c8me70xIRUUG3q+qXRwcSf9rN3oqamv4116iHy90dJGRpA==}
@@ -391,13 +388,9 @@ snapshots:
       jsonwebtoken: 9.0.3
       uuid: 8.3.2
 
-  '@nxg-org/mineflayer-physics-util@1.9.0':
-    dependencies:
-      '@nxg-org/mineflayer-util-plugin': 1.8.4
-
   '@nxg-org/mineflayer-trajectories@1.2.1(prismarine-registry@1.12.0)':
     dependencies:
-      '@nxg-org/mineflayer-util-plugin': 1.8.4
+      '@nxg-org/mineflayer-util-plugin': 1.9.1
       minecraft-data: 2.221.0
       mineflayer: 4.37.0
       prismarine-block: 1.23.0(prismarine-registry@1.12.0)
@@ -409,7 +402,7 @@ snapshots:
       - prismarine-registry
       - supports-color
 
-  '@nxg-org/mineflayer-util-plugin@1.8.4': {}
+  '@nxg-org/mineflayer-util-plugin@1.9.1': {}
 
   '@types/node-rsa@1.1.4':
     dependencies:
