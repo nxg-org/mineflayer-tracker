@@ -146,7 +146,7 @@ export class EntityTrackerOld {
       }
 
 
-      const curInfo = { position: currentPos, velocity: entity.velocity.clone(), age: this._tickAge };
+      const curInfo = { position: currentPos, velocity: emptyVec.clone(), age: this._tickAge };
       const prevInfo = info.tickInfo[info.tickInfo.length - 1];
       const vel = new Vec3(0, 0, 0);
 
@@ -176,8 +176,10 @@ export class EntityTrackerOld {
         // vel.y += pos.y - prevPos.y;
       }
 
-      vel.x = vel.x / divLength;
-      vel.z = vel.z / divLength;
+      if (divLength > 0) {
+        vel.x = vel.x / divLength;
+        vel.z = vel.z / divLength;
+      }
       // vel.y = speed.y / divLength;
 
 
@@ -193,6 +195,8 @@ export class EntityTrackerOld {
         }
        
       }
+
+      console.log('computed vel', vel.toString(), 'current vel', entity.velocity.toString(), 'pos', currentPos.toString(), 'age', this._tickAge, 'initialAge', info.initialAge, 'tickInfo length', info.tickInfo.length)
 
       if (!vel.equals(info.avgVel)) info.avgVel = vel;
     }

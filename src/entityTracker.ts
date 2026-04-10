@@ -11,6 +11,8 @@ const DIRECTION_BREAK_THRESHOLD = Math.PI / 2;
 const TURN_RATE_CLAMP = Math.PI / 8;
 const MIN_PLANAR_SPEED = 1e-4;
 const PLAYER_GROUNDED_SPEED_CAP = 0.2873;
+const STRAIGHT_TURN_EPSILON = Math.PI / 180;
+const STABLE_SPEED_TREND_EPSILON = 0.01;
 
 type TrackingInfo = { position: Vec3; velocity: Vec3; age: number };
 type VelocitySample = { velocity: Vec3; dt: number };
@@ -21,6 +23,7 @@ type MotionModel = {
   turnRate: number;
   speedTrend: number;
   verticalVelocity: number;
+  stableMotion: boolean;
 };
 
 export type TrackingData = {
@@ -29,6 +32,7 @@ export type TrackingData = {
 
 export class EntityTracker {
   public trackingData: TrackingData = {};
+  public debugLogging = true;
 
   private _enabled = false;
   private _tickAge = 0;
@@ -132,13 +136,11 @@ export class EntityTracker {
     const motionModel = this.buildMotionModel(history);
     if (!motionModel) return emptyVec;
 
-    const predictedPlanarVelocity = new Vec3(
-      motionModel.planarDirection.x * motionModel.weightedPlanarSpeed,
-      0,
-      motionModel.planarDirection.z * motionModel.weightedPlanarSpeed
+    return new Vec3(
+      motionModel.weightedPlanarVelocity.x,
+      motionModel.verticalVelocity,
+      motionModel.weightedPlanarVelocity.z
     );
-
-    return new Vec3(predictedPlanarVelocity.x, motionModel.verticalVelocity, predictedPlanarVelocity.z);
   }
 
   private buildMotionModel(history: TrackingInfo[]): MotionModel | null {
@@ -159,8 +161,9 @@ export class EntityTracker {
         weightedPlanarSpeed: 0,
         planarDirection: emptyVec,
         turnRate: 0,
-        speedTrend: this.getRecentSpeedTrend(recentSamples),
+        speedTrend: 0,
         verticalVelocity,
+        stableMotion: true,
       };
     }
 
@@ -171,22 +174,29 @@ export class EntityTracker {
         ? latestPlanarDirection
         : this.normalizePlanar(weightedPlanarVelocity);
 
-    const turnRate = this.getRecentTurnRate(recentSamples);
+    const rawTurnRate = this.getRecentTurnRate(recentSamples);
+    const turnRate = this.hasConsistentTurnSignal(recentSamples, rawTurnRate) ? rawTurnRate : 0;
     const rotatedDirection =
       this.getPlanarMagnitude(baseDirection) > MIN_PLANAR_SPEED
         ? this.rotatePlanar(baseDirection, turnRate)
         : baseDirection;
 
-    const speedTrend = this.getRecentSpeedTrend(recentSamples);
-    const predictedSpeed = this.clampPredictedSpeed(weightedPlanarSpeed, speedTrend);
+    const rawSpeedTrend = this.getRecentSpeedTrend(recentSamples);
+    const speedTrend = this.hasConsistentSpeedTrendSignal(recentSamples, rawSpeedTrend, weightedPlanarSpeed) ? rawSpeedTrend : 0;
+    const latestPlanarSpeed = this.getPlanarMagnitude(latestVelocity);
+    const stableMotion =
+      Math.abs(turnRate) <= STRAIGHT_TURN_EPSILON &&
+      Math.abs(speedTrend) <= STABLE_SPEED_TREND_EPSILON &&
+      Math.abs(latestPlanarSpeed - weightedPlanarSpeed) <= Math.max(STABLE_SPEED_TREND_EPSILON, weightedPlanarSpeed * 0.2);
 
     return {
       weightedPlanarVelocity,
-      weightedPlanarSpeed: predictedSpeed,
+      weightedPlanarSpeed,
       planarDirection: rotatedDirection,
       turnRate,
       speedTrend,
       verticalVelocity,
+      stableMotion,
     };
   }
 
@@ -274,6 +284,57 @@ export class EntityTracker {
     return weightedTrend / totalWeight;
   }
 
+  private hasConsistentTurnSignal(samples: VelocitySample[], averageTurn: number): boolean {
+    if (samples.length < 3 || Math.abs(averageTurn) <= STRAIGHT_TURN_EPSILON) return false;
+
+    let lastSign = 0;
+    let consistentCount = 0;
+
+    for (let i = 1; i < samples.length; i++) {
+      const previous = samples[i - 1].velocity;
+      const current = samples[i].velocity;
+      if (this.getPlanarMagnitude(previous) <= MIN_PLANAR_SPEED || this.getPlanarMagnitude(current) <= MIN_PLANAR_SPEED) {
+        continue;
+      }
+
+      const previousYaw = dirToYawAndPitch(new Vec3(previous.x, 0, previous.z)).yaw;
+      const currentYaw = dirToYawAndPitch(new Vec3(current.x, 0, current.z)).yaw;
+      const diff = this.getWrappedAngleDiff(previousYaw, currentYaw);
+      if (Math.abs(diff) <= STRAIGHT_TURN_EPSILON) continue;
+
+      const sign = Math.sign(diff);
+      if (lastSign !== 0 && sign !== lastSign) return false;
+      lastSign = sign;
+      consistentCount++;
+    }
+
+    return consistentCount >= 2;
+  }
+
+  private hasConsistentSpeedTrendSignal(samples: VelocitySample[], averageTrend: number, weightedPlanarSpeed: number): boolean {
+    if (samples.length < 3 || Math.abs(averageTrend) <= STABLE_SPEED_TREND_EPSILON) return false;
+
+    let lastSign = 0;
+    let consistentCount = 0;
+
+    for (let i = 1; i < samples.length; i++) {
+      const previousSpeed = this.getPlanarMagnitude(samples[i - 1].velocity);
+      const currentSpeed = this.getPlanarMagnitude(samples[i].velocity);
+      const diff = currentSpeed - previousSpeed;
+      if (Math.abs(diff) <= STABLE_SPEED_TREND_EPSILON) continue;
+
+      const sign = Math.sign(diff);
+      if (lastSign !== 0 && sign !== lastSign) return false;
+      lastSign = sign;
+      consistentCount++;
+    }
+
+    if (consistentCount < 2) return false;
+
+    // Ignore implausibly large "trend" values that are usually just noisy history windows.
+    return Math.abs(averageTrend) <= Math.max(0.02, weightedPlanarSpeed * 0.35);
+  }
+
   private clampPredictedSpeed(weightedSpeed: number, speedTrend: number): number {
     if (speedTrend < 0) {
       return Math.max(0, weightedSpeed + speedTrend);
@@ -337,6 +398,11 @@ export class EntityTracker {
     return diff;
   }
 
+  private logDebug(event: string, details: Record<string, unknown>) {
+    if (!this.debugLogging) return;
+    console.log(`[EntityTracker:${event}]`, details);
+  }
+
   private getGroundingInfo(entity: Entity, initialVelocity: Vec3, ticksAhead: number) {
     if (ticksAhead <= 0) {
       return { startsGrounded: entity.onGround, landingTick: entity.onGround ? 0 : null };
@@ -394,22 +460,43 @@ export class EntityTracker {
     );
     const groundingInfo = this.getGroundingInfo(entity, initialVelocity, sanitizedTicks);
     const groundedSpeedCap = this.getGroundedSpeedCap(entity);
+    const stableGroundedMotion =
+      motionModel.stableMotion && (groundingInfo.startsGrounded || groundingInfo.landingTick === 0);
+
+    this.logDebug("predict:start", {
+      entityId: entity.id,
+      entityName: entity.name,
+      ticksAhead: sanitizedTicks,
+      currentPosition: currentPosition.toString(),
+      weightedPlanarVelocity: motionModel.weightedPlanarVelocity.toString(),
+      weightedPlanarSpeed: motionModel.weightedPlanarSpeed,
+      turnRate: motionModel.turnRate,
+      speedTrend: motionModel.speedTrend,
+      verticalVelocity: motionModel.verticalVelocity,
+      stableMotion: motionModel.stableMotion,
+      groundingInfo,
+      groundedSpeedCap,
+    });
 
     for (let tick = 0; tick < sanitizedTicks; tick++) {
       const turnInfluence = Math.max(0, 1 - tick * 0.35);
-      const brakingInfluence = Math.max(0, 1 - tick * 0.3);
       const verticalInfluence = Math.max(0, 1 - tick * 0.5);
       const grounded =
         groundingInfo.startsGrounded ||
         (groundingInfo.landingTick !== null && tick + 1 >= groundingInfo.landingTick);
 
-      if (this.getPlanarMagnitude(direction) > MIN_PLANAR_SPEED && turnInfluence > 0) {
+      if (!motionModel.stableMotion && this.getPlanarMagnitude(direction) > MIN_PLANAR_SPEED && turnInfluence > 0) {
         direction = this.rotatePlanar(direction, motionModel.turnRate * turnInfluence);
       }
 
-      const perTickTrend = motionModel.speedTrend * brakingInfluence;
-      planarSpeed = this.clampPredictedSpeed(planarSpeed, perTickTrend);
+      const speedBeforeTrend = planarSpeed;
+      if (!stableGroundedMotion && tick > 0) {
+        const brakingInfluence = Math.max(0, 1 - (tick - 1) * 0.3);
+        const perTickTrend = motionModel.speedTrend * brakingInfluence;
+        planarSpeed = this.clampPredictedSpeed(planarSpeed, perTickTrend);
+      }
 
+      const speedBeforeGroundClamp = planarSpeed;
       if (grounded) {
         verticalVelocity = 0;
         if (groundedSpeedCap !== null) {
@@ -427,7 +514,26 @@ export class EntityTracker {
           verticalVelocity = 0;
         }
       }
+
+      this.logDebug("predict:tick", {
+        entityId: entity.id,
+        tick: tick + 1,
+      branch: motionModel.stableMotion ? "stable" : "trend-aware",
+      grounded,
+      direction: direction.toString(),
+      speedBeforeTrend,
+      speedBeforeGroundClamp,
+        planarSpeed,
+        verticalVelocity,
+        predictedPosition: predictedPosition.toString(),
+      });
     }
+
+    this.logDebug("predict:end", {
+      entityId: entity.id,
+      ticksAhead: sanitizedTicks,
+      predictedPosition: predictedPosition.toString(),
+    });
 
     return predictedPosition;
   }
