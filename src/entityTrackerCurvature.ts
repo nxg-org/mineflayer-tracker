@@ -6,10 +6,11 @@ import { dirToYawAndPitch } from "./mathUtils";
 
 const emptyVec = new Vec3(0, 0, 0);
 const DEFAULT_CONFIG = {
-  maxHistory: 20,
-  featureWindow: 10,
+  maxHistory: 40,
+  featureWindow: 20,
   directionBreakThreshold: Math.PI / 2,
   minPlanarSpeed: 1e-4,
+  minSpeedTrend: 0.01,
   minTurnRate: Math.PI / 180,
   maxTurnRate: Math.PI / 6,
   turnContinuationTicks: 3,
@@ -31,6 +32,10 @@ type CurvatureFeatures = {
   planarSpeed: number;
   headingYaw: number | null;
   turnRate: number;
+  speedTrend: number;
+  planarAcceleration: Vec3;
+  accelerationChanged: boolean;
+  forwardIntent: boolean;
   verticalVelocity: number;
 };
 
@@ -73,7 +78,7 @@ export class EntityTrackerCurvature {
 
   private logDebug(event: string, details: Record<string, unknown>, override = false) {
     if (!this.debugLogging && !override) return;
-    console.log(`[EntityTrackerCurvature:${event}]`, details);
+    console.log(`[EntityTrackerCurvature:${event}:startTick:${(this.bot as any).currentTick}]`, details);
   }
 
   private getPlanarMagnitude(vec: Vec3): number {
@@ -144,6 +149,89 @@ export class EntityTrackerCurvature {
     return new Vec3(totalAccelX / count, 0, totalAccelZ / count);
   }
 
+  private getPlanarSpeedTrend(samples: VelocitySample[]): number {
+    if (samples.length < 2) return 0;
+
+    let totalTrend = 0;
+    let count = 0;
+
+    for (let i = 1; i < samples.length; i++) {
+      totalTrend += samples[i].planarSpeed - samples[i - 1].planarSpeed;
+      count++;
+    }
+
+    if (count === 0) return 0;
+
+    const trend = totalTrend / count;
+    return Math.abs(trend) < this.config.minSpeedTrend ? 0 : trend;
+  }
+
+  private getAccelerationAwareWindow(samples: VelocitySample[]): { samples: VelocitySample[]; accelerationChanged: boolean } {
+    const recent = samples.slice(-this.config.featureWindow);
+    if (recent.length < 3) {
+      return { samples: recent, accelerationChanged: false };
+    }
+
+    const latestVelocity = recent[recent.length - 1].velocity;
+    const latestVelocityMag = this.getPlanarMagnitude(latestVelocity);
+    const latestAccel = this.getPlanarAcceleration(recent.slice(-Math.min(4, recent.length)));
+    if (!latestAccel) {
+      return { samples: recent, accelerationChanged: false };
+    }
+
+    const latestAccelMag = this.getPlanarMagnitude(latestAccel);
+    if (latestVelocityMag <= this.config.minPlanarSpeed || latestAccelMag < this.config.minSpeedTrend) {
+      return { samples: recent, accelerationChanged: false };
+    }
+
+    const velocityDot = latestVelocity.x * latestAccel.x + latestVelocity.z * latestAccel.z;
+    const braking = velocityDot < -latestVelocityMag * latestAccelMag * 0.15;
+
+    let changed = braking;
+    if (!changed) {
+      for (let i = recent.length - 2; i >= 1; i--) {
+        const segmentAccel = this.getPlanarAcceleration(recent.slice(Math.max(0, i - 1), i + 1));
+        if (!segmentAccel) continue;
+
+        const segmentMag = this.getPlanarMagnitude(segmentAccel);
+        if (segmentMag < this.config.minSpeedTrend) continue;
+
+        const dotProduct = segmentAccel.x * latestAccel.x + segmentAccel.z * latestAccel.z;
+        if (dotProduct < 0) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (!changed) {
+      return { samples: recent, accelerationChanged: false };
+    }
+
+    // Once the acceleration regime changes, the older velocity samples are
+    // mostly inertia from the previous motion phase. Keep only the freshest
+    // tail so the predictor can react to the new push instead of averaging the
+    // stale segment back into the next prediction.
+    const trimmedWindow = recent.slice(-Math.min(4, recent.length));
+    return { samples: trimmedWindow, accelerationChanged: true };
+  }
+
+  private getPredictionBranch(features: CurvatureFeatures): string {
+    if (!features.forwardIntent) {
+      return features.planarSpeed <= this.config.minPlanarSpeed ? "stopped" : "braking";
+    }
+
+    if (features.accelerationChanged) {
+      return "accel_adjusted";
+    }
+
+    if (Math.abs(features.turnRate) >= this.config.minTurnRate) {
+      return "turn_continuation";
+    }
+
+    return "steady_heading";
+  }
+
   private isAccelerationReversing(recentAccel: Vec3 | null, olderAccel: Vec3 | null): boolean {
     if (!recentAccel || !olderAccel) return false;
 
@@ -205,7 +293,7 @@ export class EntityTrackerCurvature {
     const samples = this.buildVelocitySamples(history);
     if (samples.length === 0) return null;
 
-    const recent = samples.slice(-this.config.featureWindow);
+    const { samples: recent, accelerationChanged } = this.getAccelerationAwareWindow(samples);
     const moving = recent.filter(sample => sample.planarSpeed > this.config.minPlanarSpeed);
     const latest = moving[moving.length - 1] ?? recent[recent.length - 1];
     const latestVelocity = latest.velocity.clone();
@@ -218,10 +306,27 @@ export class EntityTrackerCurvature {
       speedSource.reduce((total, sample) => total + sample.planarSpeed, 0) / Math.max(1, speedSource.length);
     const headingYaw = latest.yaw;
     const turnRate = this.getSignedTurnRate(recent);
+    const speedTrend = this.getPlanarSpeedTrend(recent);
+    const planarAcceleration = this.getPlanarAcceleration(recent) ?? emptyVec;
     const verticalVelocity = this.estimateVerticalVelocity(history);
 
     let planarVelocity = new Vec3(latestVelocity.x, 0, latestVelocity.z);
-    if (headingYaw !== null && planarSpeed > this.config.minPlanarSpeed) {
+    const accelerationMagnitude = this.getPlanarMagnitude(planarAcceleration);
+    const accelerationOpposesMotion =
+      accelerationMagnitude > this.config.minSpeedTrend &&
+      this.getPlanarMagnitude(planarVelocity) > this.config.minPlanarSpeed &&
+      planarVelocity.x * planarAcceleration.x + planarVelocity.z * planarAcceleration.z < 0;
+
+    const forwardTrendThreshold = this.config.minSpeedTrend * 2;
+    const forwardIntent = speedTrend > forwardTrendThreshold && !(accelerationChanged && accelerationOpposesMotion);
+
+    if (accelerationChanged && accelerationOpposesMotion) {
+      planarVelocity = new Vec3(
+        latestVelocity.x + planarAcceleration.x,
+        0,
+        latestVelocity.z + planarAcceleration.z
+      );
+    } else if (forwardIntent && headingYaw !== null && planarSpeed > this.config.minPlanarSpeed) {
       planarVelocity = new Vec3(-Math.sin(headingYaw) * planarSpeed, 0, -Math.cos(headingYaw) * planarSpeed);
     }
 
@@ -231,6 +336,10 @@ export class EntityTrackerCurvature {
       planarSpeed,
       headingYaw,
       turnRate,
+      speedTrend,
+      planarAcceleration,
+      accelerationChanged,
+      forwardIntent,
       verticalVelocity,
     };
   }
@@ -276,15 +385,23 @@ export class EntityTrackerCurvature {
       const ageDelta = currentSample.age - previousSample.age;
 
       if (delta.equals(emptyVec)) {
+        const stoppedSample: TrackingInfo = {
+          position: currentSample.position.clone(),
+          velocity: emptyVec.clone(),
+          age: currentSample.age,
+        };
+
         if (ageDelta > 1) {
-          info.tickInfo = [currentSample];
+          info.tickInfo = [stoppedSample];
         } else {
-          previousSample.age = currentSample.age;
-          previousSample.velocity = currentSample.velocity;
+          info.tickInfo.push(stoppedSample);
         }
 
         info.initialAge = this._tickAge;
         info.avgVel = emptyVec;
+        while (info.tickInfo.length > this.config.maxHistory) {
+          info.tickInfo.shift();
+        }
         continue;
       }
 
@@ -324,8 +441,8 @@ export class EntityTrackerCurvature {
       simCtx.state.vel = new Vec3(features.planarVelocity.x, features.verticalVelocity, features.planarVelocity.z);
       simCtx.state.yaw = features.headingYaw;
       simCtx.state.control = ControlStateHandler.DEFAULT()
-        .set("forward", this.config.assumeForwardInput)
-        .set("sprint", this.config.assumeSprintInput);
+        .set("forward", this.config.assumeForwardInput && features.forwardIntent)
+        .set("sprint", this.config.assumeSprintInput && features.forwardIntent);
 
       // The main idea of this tracker is to treat recent path curvature as a
       // short-horizon proxy for continued steering. If the target has been
@@ -361,16 +478,22 @@ export class EntityTrackerCurvature {
     const features = this.deriveCurvatureFeatures(entry.info.tickInfo);
     if (!features) return currentPosition;
 
+    const branch = this.getPredictionBranch(features);
     this.logDebug("predict:start", {
       entityId: entity.id,
       ticksAhead: sanitizedTicks,
       currentPosition: currentPosition.toString(),
+      branch,
       planarVelocity: features.planarVelocity.toString(),
       planarSpeed: features.planarSpeed,
       headingYaw: features.headingYaw,
       turnRate: features.turnRate,
+      speedTrend: features.speedTrend,
+      planarAcceleration: features.planarAcceleration.toString(),
+      accelerationChanged: features.accelerationChanged,
+      forwardIntent: features.forwardIntent,
       verticalVelocity: features.verticalVelocity,
-    });
+    }, true);
 
     const predictedFromPhysics = this.predictWithCurvaturePhysics(entity, sanitizedTicks, features);
     if (predictedFromPhysics) {
@@ -386,14 +509,17 @@ export class EntityTrackerCurvature {
     // physics refinement available.
     const predicted = currentPosition.clone();
     let yaw = features.headingYaw ?? 0;
+    let planarSpeed = features.planarSpeed;
 
     for (let tick = 0; tick < sanitizedTicks; tick++) {
-      if (tick < this.config.turnContinuationTicks) {
+      if (features.forwardIntent && tick < this.config.turnContinuationTicks) {
         yaw += features.turnRate;
       }
 
-      predicted.x += -Math.sin(yaw) * features.planarSpeed;
-      predicted.z += -Math.cos(yaw) * features.planarSpeed;
+      const speedDelta = features.forwardIntent ? features.speedTrend : Math.min(0, features.speedTrend);
+      planarSpeed = Math.max(0, planarSpeed + speedDelta);
+      predicted.x += -Math.sin(yaw) * planarSpeed;
+      predicted.z += -Math.cos(yaw) * planarSpeed;
     }
 
     return predicted;
