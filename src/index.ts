@@ -28,6 +28,7 @@ export default function plugin(bot: Bot) {
 
 export { EntityTracker };
 export { EntityTrackerCurvature };
+export type { CurvaturePrediction } from "./entityTrackerCurvature";
 export { ProjectileTracker };
 export { MovementSimulations };
 

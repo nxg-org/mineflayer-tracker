@@ -3,6 +3,7 @@ import { Bot } from "mineflayer";
 import { Entity } from "prismarine-entity";
 import { Vec3 } from "vec3";
 import { dirToYawAndPitch } from "./mathUtils";
+import { getMovementWindowConfidence, type WindowConfidenceSample } from "./windowConfidence";
 
 const emptyVec = new Vec3(0, 0, 0);
 const DEFAULT_CONFIG = {
@@ -19,7 +20,7 @@ const DEFAULT_CONFIG = {
   assumeSprintInput: true,
 };
 
-type TrackingInfo = { position: Vec3; velocity: Vec3; age: number };
+type TrackingInfo = { position: Vec3; velocity: Vec3; age: number; duration: number };
 type VelocitySample = {
   velocity: Vec3;
   planarSpeed: number;
@@ -37,6 +38,11 @@ type CurvatureFeatures = {
   verticalVelocity: number;
 };
 
+export type CurvaturePrediction = {
+  position: Vec3;
+  confidence: number;
+};
+
 export type EntityTrackerCurvatureConfig = Partial<typeof DEFAULT_CONFIG>;
 
 export type TrackingData = {
@@ -50,6 +56,8 @@ export class EntityTrackerCurvature {
   private _enabled = false;
   private _tickAge = 0;
   private readonly config: typeof DEFAULT_CONFIG;
+  private readonly lastLoggedPredictionTick = new Map<number, number>();
+  private readonly recentMovement = new Map<number, { previous: Vec3 | null; current: Vec3 }>();
 
   public get enabled() {
     return this._enabled;
@@ -79,6 +87,48 @@ export class EntityTrackerCurvature {
     console.log(`[EntityTrackerCurvature:${event}]`, details);
   }
 
+  private formatVec3(vec: Vec3): string {
+    return `(${vec.x}, ${vec.y}, ${vec.z})`;
+  }
+
+  private formatMaybeVec3(vec: Vec3 | null | undefined): string {
+    return vec ? this.formatVec3(vec) : "null";
+  }
+
+  private formatTrackedInfo(entries: Array<{ position: Vec3; velocity: Vec3; age?: number; duration?: number }>): string {
+    if (entries.length === 0) return "null";
+
+    return entries
+      .map(entry => {
+        return `{age: ${entry.age ?? "null"}, dur: ${entry.duration ?? "null"}, pos: ${this.formatVec3(entry.position)}, vel: ${this.formatVec3(entry.velocity)}}`;
+      })
+      .join(", ");
+  }
+
+  private cloneTrackedInfo(entityId: number): TrackingInfo[] {
+    const tickInfo = this.trackingData[entityId]?.info.tickInfo ?? [];
+    return tickInfo.map(entry => ({
+      position: entry.position.clone(),
+      velocity: entry.velocity.clone(),
+      age: entry.age,
+      duration: entry.duration,
+    }));
+  }
+
+  private getYawDegrees(yaw: number): string {
+    if (!Number.isFinite(yaw)) return "null";
+    return ((yaw * 180) / Math.PI).toFixed(1);
+  }
+
+  private clamp01(value: number): number {
+    return Math.max(0, Math.min(1, value));
+  }
+
+  private average(values: number[]): number {
+    if (values.length === 0) return 0;
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
+  }
+
   private getPlanarMagnitude(vec: Vec3): number {
     return Math.sqrt(vec.x * vec.x + vec.z * vec.z);
   }
@@ -98,16 +148,15 @@ export class EntityTrackerCurvature {
     for (let i = 1; i < history.length; i++) {
       const previous = history[i - 1];
       const current = history[i];
-      const dt = current.age - previous.age;
-      if (dt <= 0) continue;
 
       const delta = current.position.minus(previous.position);
-      const velocity = new Vec3(delta.x / dt, delta.y / dt, delta.z / dt);
+      // Normalize velocity to per-tick (positions are sent every 2 ticks in Minecraft)
+      const velocity = new Vec3(delta.x / 2, delta.y / 2, delta.z / 2);
       const planarSpeed = this.getPlanarMagnitude(velocity);
       const yaw =
         planarSpeed > this.config.minPlanarSpeed ? dirToYawAndPitch(new Vec3(velocity.x, 0, velocity.z)).yaw : null;
 
-      samples.push({ velocity, planarSpeed, yaw, dt });
+      samples.push({ velocity, planarSpeed, yaw, dt: 1 });
     }
 
     return samples;
@@ -118,8 +167,8 @@ export class EntityTrackerCurvature {
     const previous = history[history.length - 2];
     if (!latest || !previous) return -0.078;
 
-    const dt = latest.age - previous.age;
-    const deltaY = dt > 0 ? (latest.position.y - previous.position.y) / dt : 0;
+    // Normalize to per-tick (positions are sent every 2 ticks)
+    const deltaY = (latest.position.y - previous.position.y) / 2;
     return Math.abs(deltaY) <= 1e-9 ? -0.078 : deltaY;
   }
 
@@ -133,10 +182,9 @@ export class EntityTrackerCurvature {
     for (let i = 1; i < samples.length; i++) {
       const prev = samples[i - 1];
       const curr = samples[i];
-      const dt = curr.dt > 0 ? curr.dt : 1;
 
-      const accelX = (curr.velocity.x - prev.velocity.x) / dt;
-      const accelZ = (curr.velocity.z - prev.velocity.z) / dt;
+      const accelX = curr.velocity.x - prev.velocity.x;
+      const accelZ = curr.velocity.z - prev.velocity.z;
 
       totalAccelX += accelX;
       totalAccelZ += accelZ;
@@ -147,7 +195,7 @@ export class EntityTrackerCurvature {
     return new Vec3(totalAccelX / count, 0, totalAccelZ / count);
   }
 
-  private getAccelerationAwareWindow(samples: VelocitySample[]): { samples: VelocitySample[]; accelerationChanged: boolean } {
+  private getAccelerationAwareWindow(samples: VelocitySample[], entityId?: number): { samples: VelocitySample[]; accelerationChanged: boolean } {
     const recent = samples.slice(-this.config.featureWindow);
     if (recent.length < 3) {
       return { samples: recent, accelerationChanged: false };
@@ -254,11 +302,42 @@ export class EntityTrackerCurvature {
     return Math.max(-this.config.maxTurnRate, Math.min(this.config.maxTurnRate, turnRate));
   }
 
-  private deriveCurvatureFeatures(history: TrackingInfo[]): CurvatureFeatures | null {
-    const samples = this.buildVelocitySamples(history);
-    if (samples.length === 0) return null;
+  private isInLongStaticPeriod(history: TrackingInfo[]): boolean {
+    if (history.length === 0) return false;
 
-    const { samples: recent, accelerationChanged } = this.getAccelerationAwareWindow(samples);
+    const latest = history[history.length - 1];
+    const latestPlanarSpeed = this.getPlanarMagnitude(new Vec3(latest.velocity.x, 0, latest.velocity.z));
+    const isDurationLong = latest.duration > 3; // Standing still for >3 ticks is inconsistent, treat as static
+    const isVelocityNearZero = latestPlanarSpeed < this.config.minPlanarSpeed * 2;
+
+    return isDurationLong && isVelocityNearZero;
+  }
+
+  private deriveCurvatureFeatures(history: TrackingInfo[], entityId?: number): CurvatureFeatures | null {
+    const samples = this.buildVelocitySamples(history);
+    if (samples.length === 0) {
+      const latest = history[history.length - 1];
+      if (!latest) return null;
+
+      const planarVelocity = new Vec3(latest.velocity.x, 0, latest.velocity.z);
+      const planarSpeed = this.getPlanarMagnitude(planarVelocity);
+      const headingYaw =
+        planarSpeed > this.config.minPlanarSpeed ? dirToYawAndPitch(new Vec3(planarVelocity.x, 0, planarVelocity.z)).yaw : null;
+      const verticalVelocity = this.estimateVerticalVelocity(history);
+
+      return {
+        latestVelocity: new Vec3(latest.velocity.x, verticalVelocity, latest.velocity.z),
+        planarVelocity,
+        planarSpeed,
+        headingYaw,
+        turnRate: 0,
+        planarAcceleration: emptyVec,
+        accelerationChanged: false,
+        verticalVelocity,
+      };
+    }
+
+    const { samples: recent, accelerationChanged } = this.getAccelerationAwareWindow(samples, entityId);
     const moving = recent.filter(sample => sample.planarSpeed > this.config.minPlanarSpeed);
     const latest = moving[moving.length - 1] ?? recent[recent.length - 1];
     const latestVelocity = latest.velocity.clone();
@@ -270,7 +349,11 @@ export class EntityTrackerCurvature {
     const planarSpeed =
       speedSource.reduce((total, sample) => total + sample.planarSpeed, 0) / Math.max(1, speedSource.length);
     const headingYaw = latest.yaw;
-    const turnRate = this.getSignedTurnRate(recent);
+    
+    // If in a long static period, suppress turn extrapolation entirely
+    const inStaticPeriod = this.isInLongStaticPeriod(history);
+    const turnRate = inStaticPeriod ? 0 : this.getSignedTurnRate(recent);
+    
     const planarAcceleration = this.getPlanarAcceleration(recent) ?? emptyVec;
     const verticalVelocity = this.estimateVerticalVelocity(history);
 
@@ -308,11 +391,78 @@ export class EntityTrackerCurvature {
 
     const previous = info.tickInfo[info.tickInfo.length - 2];
     const latest = info.tickInfo[info.tickInfo.length - 1];
-    const dt = latest.age - previous.age;
-    if (dt <= 0) return emptyVec;
 
     const delta = latest.position.minus(previous.position);
-    return new Vec3(delta.x / dt, 0, delta.z / dt);
+    return new Vec3(delta.x, 0, delta.z);
+  }
+
+  private getRelativeMovementSummary(actual: Vec3, deltaVelocity: Vec3 | null): string {
+    if (!deltaVelocity) return "null";
+
+    const move = new Vec3(deltaVelocity.x, 0, deltaVelocity.z);
+    const moveMagnitude = this.getPlanarMagnitude(move);
+    if (moveMagnitude <= this.config.minPlanarSpeed) {
+      return `move=${this.formatVec3(move)} radial=0.000 tangential=0.000 angleDeg=0.0`;
+    }
+
+    const actualFlat = new Vec3(actual.x, 0, actual.z);
+    const actualMagnitude = this.getPlanarMagnitude(actualFlat);
+    if (actualMagnitude <= this.config.minPlanarSpeed) {
+      return `move=${this.formatVec3(move)} radial=0.000 tangential=0.000 angleDeg=0.0`;
+    }
+
+    const dot = actualFlat.x * move.x + actualFlat.z * move.z;
+    const cross = actualFlat.x * move.z - actualFlat.z * move.x;
+    const cosine = Math.max(-1, Math.min(1, dot / (actualMagnitude * moveMagnitude)));
+    const angleDeg = (Math.acos(cosine) * 180) / Math.PI;
+    const radial = dot / actualMagnitude;
+    const tangential = Math.abs(cross) / actualMagnitude;
+
+    return `move=${this.formatVec3(move)} radial=${radial.toFixed(3)} tangential=${tangential.toFixed(3)} angleDeg=${angleDeg.toFixed(1)}`;
+  }
+
+  public logActualTargetPositionAfterTicks(target: Entity, ticks: number, predicted: CurvaturePrediction | null, startTick: number): void {
+    const targetId = target.id;
+    const lastLoggedTick = this.lastLoggedPredictionTick.get(targetId);
+    if (lastLoggedTick === startTick) return;
+
+    this.lastLoggedPredictionTick.set(targetId, startTick);
+    const startPos = target.position.clone();
+    const trackedInfoAtPredictionStart = this.cloneTrackedInfo(targetId);
+
+    void this.bot.waitForTicks(Math.max(0, ticks)).then(() => {
+      const currentTarget = this.bot.entities[targetId];
+      if (!currentTarget) {
+        const trackedHistoryAtPredictionTime = this.formatTrackedInfo(trackedInfoAtPredictionStart);
+        console.log(
+          `[shot-planner:startTick=${startTick}] | confidence=${predicted?.confidence ?? "null"} | tickDuration=${ticks} | ` +
+          `positionAtPredictionTime=${this.formatVec3(startPos)} | predictedPosition=${this.formatMaybeVec3(predicted?.position)} | ` +
+          `positionAfterWait=null | entityYawDegrees=null | actualVelocityPerTick=null | movementAnalysis=null | predictionError=null | ` +
+          `trackedHistoryAtPredictionTime=${trackedHistoryAtPredictionTime} | trackedHistoryAfterWait=null`,
+        );
+        return;
+      }
+
+      const positionAfterWait = currentTarget.position.clone();
+      const lastMovementData = this.recentMovement.get(targetId);
+      const rawPositionDelta = lastMovementData?.previous && lastMovementData.current.equals(positionAfterWait) ? lastMovementData.current.minus(lastMovementData.previous) : null;
+      // Normalize to per-tick (positions are sent every 2 ticks)
+      const actualVelocityPerTick = rawPositionDelta ? new Vec3(rawPositionDelta.x / 2, rawPositionDelta.y / 2, rawPositionDelta.z / 2) : null;
+      const predictionError = predicted ? positionAfterWait.minus(predicted.position) : null;
+      const movementAnalysis = this.getRelativeMovementSummary(positionAfterWait, actualVelocityPerTick);
+      const entityYawDegrees = this.getYawDegrees(currentTarget.yaw);
+      const trackedHistoryAtPredictionTime = this.formatTrackedInfo(trackedInfoAtPredictionStart);
+      const trackedHistoryAfterWait = this.formatTrackedInfo(this.trackingData[targetId]?.info.tickInfo ?? []);
+
+      console.log(
+        `[shot-planner:startTick=${startTick}] | confidence=${predicted?.confidence ?? "null"} | tickDuration=${ticks} | ` +
+          `positionAtPredictionTime=${this.formatVec3(startPos)} | predictedPosition=${this.formatMaybeVec3(predicted?.position)} | ` +
+          `positionAfterWait=${this.formatVec3(positionAfterWait)} | entityYawDegrees=${entityYawDegrees} | ` +
+          `actualVelocityPerTick=${this.formatMaybeVec3(actualVelocityPerTick)} | movementAnalysis=${movementAnalysis} | ` +
+          `predictionError=${this.formatMaybeVec3(predictionError)} | ` +
+          `trackedHistoryAtPredictionTime=${trackedHistoryAtPredictionTime} | trackedHistoryAfterWait=${trackedHistoryAfterWait}`,
+      );
+    });
   }
 
   private trackMotionHistory = () => {
@@ -330,6 +480,7 @@ export class EntityTrackerCurvature {
         position: entity.position.clone(),
         velocity: entity.velocity.clone(),
         age: this._tickAge,
+        duration: 1,
       };
 
       const previousSample = info.tickInfo[info.tickInfo.length - 1];
@@ -345,10 +496,21 @@ export class EntityTrackerCurvature {
 
       if (delta.equals(emptyVec)) {
         if (ageDelta > 1) {
+          currentSample.duration = ageDelta;
+          // When standing still, zero out horizontal velocity
+          currentSample.velocity = new Vec3(0, currentSample.velocity.y, 0);
+          // Clear all history when standing still for >3 ticks
           info.tickInfo = [currentSample];
         } else {
+          previousSample.duration += 1;
           previousSample.age = currentSample.age;
-          previousSample.velocity = currentSample.velocity;
+          // When standing still, zero out horizontal velocity
+        
+          // If previous sample has now accumulated >3 ticks of standstill, collapse history
+          if (previousSample.duration > 3) {
+            previousSample.velocity = new Vec3(0, currentSample.velocity.y, 0);
+            info.tickInfo = [previousSample];
+          }
         }
 
         info.initialAge = this._tickAge;
@@ -356,27 +518,38 @@ export class EntityTrackerCurvature {
         continue;
       }
 
-      const recentPlanar = this.getCurrentPlanarDelta(info);
-      if (!recentPlanar.equals(emptyVec)) {
-        const deltaPlanar = new Vec3(delta.x, 0, delta.z);
-        if (
-          this.getPlanarMagnitude(recentPlanar) > this.config.minPlanarSpeed &&
-          this.getPlanarMagnitude(deltaPlanar) > this.config.minPlanarSpeed
-        ) {
-          const oldYaw = dirToYawAndPitch(recentPlanar).yaw;
-          const newYaw = dirToYawAndPitch(deltaPlanar).yaw;
-          if (Math.abs(this.getWrappedAngleDiff(oldYaw, newYaw)) >= this.config.directionBreakThreshold) {
-            info.tickInfo = [previousSample];
+      this.recentMovement.set(Number(entityId), {
+        previous: previousSample.position.clone(),
+        current: currentSample.position.clone(),
+      });
+
+      // When resuming movement after a long static period, discard the stale static history
+      if (previousSample.duration > 3 && this.getPlanarMagnitude(new Vec3(previousSample.velocity.x, 0, previousSample.velocity.z)) < this.config.minPlanarSpeed * 2) {
+        info.tickInfo = [currentSample];
+      } else {
+        const recentPlanar = this.getCurrentPlanarDelta(info);
+        if (!recentPlanar.equals(emptyVec)) {
+          const deltaPlanar = new Vec3(delta.x, 0, delta.z);
+          if (
+            this.getPlanarMagnitude(recentPlanar) > this.config.minPlanarSpeed &&
+            this.getPlanarMagnitude(deltaPlanar) > this.config.minPlanarSpeed
+          ) {
+            const oldYaw = dirToYawAndPitch(recentPlanar).yaw;
+            const newYaw = dirToYawAndPitch(deltaPlanar).yaw;
+            if (Math.abs(this.getWrappedAngleDiff(oldYaw, newYaw)) >= this.config.directionBreakThreshold) {
+              info.tickInfo = [previousSample];
+            }
           }
         }
+
+        info.tickInfo.push(currentSample);
       }
 
-      info.tickInfo.push(currentSample);
       while (info.tickInfo.length > this.config.maxHistory) {
         info.tickInfo.shift();
       }
 
-      const features = this.deriveCurvatureFeatures(info.tickInfo);
+      const features = this.deriveCurvatureFeatures(info.tickInfo, +entityId);
       info.avgVel = features?.latestVelocity ?? emptyVec;
     }
   };
@@ -393,7 +566,20 @@ export class EntityTrackerCurvature {
       simCtx.state.yaw = features.headingYaw;
       simCtx.state.control = ControlStateHandler.DEFAULT()
         .set("forward", this.config.assumeForwardInput)
-        .set("sprint", this.config.assumeSprintInput);
+        .set("sprint", this.config.assumeSprintInput)
+
+        // Jump state is a bit tricky since we do not directly observe it.
+        // but it has a big impact on vertical motion and thus trajectory.
+        // Use a simple heuristic based on whether the entity is currently ascending or descending
+        // to set the initial jump state, which lets physics produce a more accurate arc 
+        // instead of trying to guess the jump from vertical velocity alone.
+        
+        // the heuristic is checking if the vertical position is not close to a flat plane (to 3 decimal places)
+        // if equal to floored (0 dec.), then we're on a solid block.
+        // if equal to anything with < 3 decimal places, then its probably intentional.
+        // if we're just moving through midair, typically the position will be something like 10.123456, which floors to 10.123
+        .set("jump", simCtx.state.pos.y != Number(simCtx.state.pos.y.toFixed(3))); 
+
 
       // The main idea of this tracker is to treat recent path curvature as a
       // short-horizon proxy for continued steering. If the target has been
@@ -418,16 +604,46 @@ export class EntityTrackerCurvature {
     }
   }
 
-  public predictEntityPosition(entity: Entity, ticksAhead: number): Vec3 | null {
+  public predictEntityPositionWithConfidence(entity: Entity, ticksAhead: number): CurvaturePrediction | null {
     const entry = this.trackingData[entity.id];
     if (!entry) return null;
 
     const sanitizedTicks = Math.max(0, Math.floor(ticksAhead));
     const currentPosition = entity.position.clone();
-    if (sanitizedTicks === 0) return currentPosition;
+    if (sanitizedTicks === 0) {
+      return { position: currentPosition, confidence: 1 };
+    }
 
-    const features = this.deriveCurvatureFeatures(entry.info.tickInfo);
-    if (!features) return currentPosition;
+    // If entity is in a long static period, just predict it stays in place
+    if (this.isInLongStaticPeriod(entry.info.tickInfo)) {
+      return { position: currentPosition, confidence: 0.95 };
+    }
+
+    const features = this.deriveCurvatureFeatures(entry.info.tickInfo, entity.id);
+    if (!features) return { position: currentPosition, confidence: 0 };
+    const observedSamples = this.buildVelocitySamples(entry.info.tickInfo);
+    const { accelerationChanged } = this.getAccelerationAwareWindow(observedSamples, entity.id);
+    const windowAge = entry.info.tickInfo.reduce((sum, sample) => sum + Math.max(1, sample.duration), 0);
+    const confidence = getMovementWindowConfidence({
+      samples: (
+        observedSamples.length > 0
+          ? observedSamples
+          : [
+              {
+                velocity: new Vec3(features.latestVelocity.x, 0, features.latestVelocity.z),
+                planarSpeed: features.planarSpeed,
+                dt: 1,
+                duration: windowAge,
+              },
+            ]
+      ) as WindowConfidenceSample[],
+      ticksAhead: sanitizedTicks,
+      featureWindow: this.config.featureWindow,
+      windowAge,
+      minPlanarSpeed: this.config.minPlanarSpeed,
+      minSpeedTrend: this.config.minSpeedTrend,
+      accelerationChanged,
+    });
 
     this.logDebug("predict:start", {
       entityId: entity.id,
@@ -440,6 +656,7 @@ export class EntityTrackerCurvature {
       planarAcceleration: features.planarAcceleration.toString(),
       accelerationChanged: features.accelerationChanged,
       verticalVelocity: features.verticalVelocity,
+      confidence,
     });
 
     const predictedFromPhysics = this.predictWithCurvaturePhysics(entity, sanitizedTicks, features);
@@ -447,8 +664,9 @@ export class EntityTrackerCurvature {
       this.logDebug("predict:end", {
         entityId: entity.id,
         predictedPosition: predictedFromPhysics.toString(),
+        confidence,
       });
-      return predictedFromPhysics;
+      return { position: predictedFromPhysics, confidence };
     }
 
     // Fallback: continue the local heading and rotate it by recent curvature
@@ -466,7 +684,11 @@ export class EntityTrackerCurvature {
       predicted.z += -Math.cos(yaw) * features.planarSpeed;
     }
 
-    return predicted;
+    return { position: predicted, confidence };
+  }
+
+  public predictEntityPosition(entity: Entity, ticksAhead: number): Vec3 | null {
+    return this.predictEntityPositionWithConfidence(entity, ticksAhead)?.position ?? null;
   }
 
   public trackEntity(entity: Entity) {

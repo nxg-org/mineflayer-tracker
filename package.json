@@ -36,7 +36,8 @@
         "build": "npx tsc",
         "prepare": "npm run build",
         "prepublish": "npm run build",
-        "test": "node --trace-warnings lib/example.js tracker-test"
+        "test": "tsx --test test/**/*.test.ts",
+        "extract:movement": "tsx scripts/extract-movement-samples.ts"
     },
     "dependencies": {
         "@nxg-org/mineflayer-physics-util": "link:C:\\Users\\owner\\Documents\\github\\mineflayer-physics-utils",
@@ -45,9 +46,12 @@
     },
     "devDependencies": {
         "@types/node": "^22.15.17",
+        "minecraft-data": "^3.109.0",
         "mineflayer": "^4.27.0",
         "prismarine-block": "^1.23.0",
         "prismarine-entity": "^2.6.0",
+        "prismarine-registry": "^1.12.0",
+        "tsx": "^4.21.0",
         "typescript": "^5.8.3",
         "vec3": "^0.1.10"
     }
