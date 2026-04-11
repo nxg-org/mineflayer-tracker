@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 type Vec3Tuple = [number, number, number];
 
@@ -10,28 +11,52 @@ type TrackedInfoEntry = {
   velocity: Vec3Tuple;
 };
 
+type MovementAnalysis = {
+  move: Vec3Tuple;
+  radial: number;
+  tangential: number;
+  angleDeg: number;
+};
+
+type ShotPlannerReplaySnapshot = {
+  entityId: number;
+  ticksAhead: number;
+  currentPosition: Vec3Tuple;
+  currentVelocity: Vec3Tuple;
+  currentYaw: number;
+  currentPitch: number;
+  currentOnGround: boolean;
+  tracking: {
+    initialAge: number;
+    avgVel: Vec3Tuple;
+    tickInfo: TrackedInfoEntry[];
+  } | null;
+  predictedPosition: Vec3Tuple | null;
+  confidence: number | null;
+};
+
 type MovementSample = {
   line: number;
   phase: string | null;
   chatTick: number | null;
-  startTick: number;
-  tickDuration: number;
-  confidence: number;
-  start: Vec3Tuple;
-  predicted: Vec3Tuple;
-  actual: Vec3Tuple;
-  yawDeg: number;
-  actualLastV: Vec3Tuple;
-  actualRelativeDelta: Vec3Tuple;
-  radial: number;
-  tangential: number;
-  angleDeg: number;
-  predDelta: Vec3Tuple;
-  trackedInfoStart: TrackedInfoEntry[];
-  trackedInfoEnd: TrackedInfoEntry[];
-  trackedInfo: TrackedInfoEntry[];
-  distanceError: number;
-  errorDelta: Vec3Tuple;
+  shotPlanner: {
+    startTick: number;
+    tickDuration: number;
+    confidence: number | null;
+    positionAtPredictionTime: Vec3Tuple;
+    predictedPosition: Vec3Tuple | null;
+    positionAfterWait: Vec3Tuple | null;
+    entityYawDegrees: number | null;
+    actualVelocityPerTick: Vec3Tuple | null;
+    movementAnalysis: MovementAnalysis | null;
+    predictionError: Vec3Tuple | null;
+    trackedHistoryAtPredictionTime: TrackedInfoEntry[] | null;
+    trackedHistoryAfterWait: TrackedInfoEntry[] | null;
+  };
+  replaySnapshot: ShotPlannerReplaySnapshot | null;
+  derived: {
+    distanceError: number | null;
+  };
   raw: string;
 };
 
@@ -73,10 +98,9 @@ type LogContext = {
   chatTick: number | null;
 };
 
-const SHOT_LINE_RE =
-  /^\[shot-planner:startTick=(\d+)] tickDuration=(\d+) start=\(([^)]*)\) predicted=\(([^)]*)\) confidence=([^\s]+) actual=\(([^)]*)\) yawDeg=([^\s]+) actualLastV=\(([^)]*)\) actualRelativeDelta=move=\(([^)]*)\) radial=([^\s]+) tangential=([^\s]+) angleDeg=([^\s]+) predDelta=\(([^)]*)\)(?: trackedInfoStart=(.*?)(?: trackedInfoEnd=(.*))?| trackedInfo=(.*))?$/;
+const SHOT_LINE_RE = /^\[shot-planner:startTick=(\d+)]\s*(.*)$/;
 const CHAT_LINE_RE = /^\[chat:tick=(\d+)]\s*(.*)$/;
-const PHASE_RE = /\bphase=([^\s|]+)/;
+const PERF_PHASE_RE = /^\[perf\] tick=\d+ stateMachine\.update source=tick phase=([^\s|]+)/;
 const TRACKED_INFO_RE = /(?:age: (\d+), )?(?:dur: (\d+), )?pos: \(([^)]*)\), vel: \(([^)]*)\)/g;
 
 function parseNumber(value: string): number {
@@ -85,6 +109,11 @@ function parseNumber(value: string): number {
     throw new Error(`Could not parse number from "${value}"`);
   }
   return parsed;
+}
+
+function parseMaybeNumber(value: string | undefined): number | null {
+  if (value == null || value === "null") return null;
+  return parseNumber(value);
 }
 
 function parseTuple(value: string, expectedLength: number): number[] {
@@ -105,6 +134,19 @@ function parseVec3Tuple(value: string): Vec3Tuple {
   return [parts[0], parts[1], parts[2]];
 }
 
+function stripOuterParens(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function parseMaybeVec3(value: string | undefined): Vec3Tuple | null {
+  if (value == null || value === "null") return null;
+  return parseVec3(stripOuterParens(value));
+}
+
 function computeDistanceError(predicted: Vec3Tuple, actual: Vec3Tuple): number {
   const dx = predicted[0] - actual[0];
   const dy = predicted[1] - actual[1];
@@ -112,22 +154,55 @@ function computeDistanceError(predicted: Vec3Tuple, actual: Vec3Tuple): number {
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-function parseTrackedInfo(value: string | undefined): TrackedInfoEntry[] {
-  if (!value) return [];
+function parseTrackedInfo(value: string | undefined): TrackedInfoEntry[] | null {
+  if (!value || value === "null") return null;
 
   const entries: TrackedInfoEntry[] = [];
   TRACKED_INFO_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
-    while ((match = TRACKED_INFO_RE.exec(value)) !== null) {
-      entries.push({
-        age: match[1] ? Number(match[1]) : undefined,
-        duration: match[2] ? Number(match[2]) : undefined,
-        position: parseVec3(match[3]),
-        velocity: parseVec3(match[4]),
-      });
-    }
+  while ((match = TRACKED_INFO_RE.exec(value)) !== null) {
+    entries.push({
+      age: match[1] ? Number(match[1]) : undefined,
+      duration: match[2] ? Number(match[2]) : undefined,
+      position: parseVec3(match[3]),
+      velocity: parseVec3(match[4]),
+    });
+  }
 
   return entries;
+}
+
+function parseMovementAnalysis(value: string | undefined): MovementAnalysis | null {
+  if (!value || value === "null") return null;
+
+  const match = value.match(
+    /^move=\(([^)]*)\)\s+radial=([^\s]+)\s+tangential=([^\s]+)\s+angleDeg=([^\s]+)$/
+  );
+  if (!match) {
+    throw new Error(`Could not parse movementAnalysis from "${value}"`);
+  }
+
+  return {
+    move: parseVec3(match[1]),
+    radial: parseNumber(match[2]),
+    tangential: parseNumber(match[3]),
+    angleDeg: parseNumber(match[4]),
+  };
+}
+
+function parseKeyValuePairs(value: string): Map<string, string> {
+  const pairs = new Map<string, string>();
+  const normalized = value.replace(/^\|\s*/, "");
+  for (const token of normalized.split(" | ")) {
+    const separatorIndex = token.indexOf("=");
+    if (separatorIndex === -1) {
+      throw new Error(`Expected key=value token, got "${token}"`);
+    }
+    const key = token.slice(0, separatorIndex);
+    const raw = token.slice(separatorIndex + 1);
+    pairs.set(key, raw);
+  }
+  return pairs;
 }
 
 function vec3Key(vec: Vec3Tuple): string {
@@ -157,7 +232,14 @@ function buildTimeline(samples: MovementSample[]): MovementTimelineSegment[] {
   } | null = null;
 
   for (const sample of samples) {
-    if (!current || !sameVec3(current.position, sample.actual) || current.phase !== sample.phase) {
+    const actualPosition = sample.shotPlanner.positionAfterWait;
+    const entryRelativeDelta = sample.shotPlanner.movementAnalysis?.move ?? [0, 0, 0];
+
+    if (!actualPosition) {
+      continue;
+    }
+
+    if (!current || !sameVec3(current.position, actualPosition) || current.phase !== sample.phase) {
       if (current) {
         segments.push({
           phase: current.phase,
@@ -186,9 +268,9 @@ function buildTimeline(samples: MovementSample[]): MovementTimelineSegment[] {
       const previousPosition = previousSegment ? previousSegment.position : null;
       const deltaFromPrevious: Vec3Tuple = previousPosition
         ? [
-            sample.actual[0] - previousPosition[0],
-            sample.actual[1] - previousPosition[1],
-            sample.actual[2] - previousPosition[2],
+            actualPosition[0] - previousPosition[0],
+            actualPosition[1] - previousPosition[1],
+            actualPosition[2] - previousPosition[2],
           ]
         : [0, 0, 0];
 
@@ -196,14 +278,14 @@ function buildTimeline(samples: MovementSample[]): MovementTimelineSegment[] {
         phase: sample.phase,
         startLine: sample.line,
         endLine: sample.line,
-        startTick: sample.startTick,
-        endTick: sample.startTick,
-        position: sample.actual,
+        startTick: sample.shotPlanner.startTick,
+        endTick: sample.shotPlanner.startTick,
+        position: actualPosition,
         previousPosition,
         deltaFromPrevious,
-        entryRelativeDelta: sample.actualRelativeDelta,
-        confidences: [sample.confidence],
-        distances: [sample.distanceError],
+        entryRelativeDelta,
+        confidences: [sample.shotPlanner.confidence ?? 0],
+        distances: [sample.derived.distanceError ?? 0],
         rawFirst: sample.raw,
         rawLast: sample.raw,
       };
@@ -211,9 +293,9 @@ function buildTimeline(samples: MovementSample[]): MovementTimelineSegment[] {
     }
 
     current.endLine = sample.line;
-    current.endTick = sample.startTick;
-    current.confidences.push(sample.confidence);
-    current.distances.push(sample.distanceError);
+    current.endTick = sample.shotPlanner.startTick;
+    current.confidences.push(sample.shotPlanner.confidence ?? 0);
+    current.distances.push(sample.derived.distanceError ?? 0);
     current.rawLast = sample.raw;
   }
 
@@ -281,11 +363,11 @@ function parseArgs(argv: string[]) {
   return args;
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const inputPath = path.resolve(process.cwd(), args.input);
-  const outputPath = path.resolve(process.cwd(), args.output);
-
+export async function extractMovementSamples(
+  inputPath: string,
+  outputPath: string,
+  options: { phase?: string | null; pretty?: boolean; verbose?: boolean } = {}
+) {
   const raw = await fs.readFile(inputPath, "utf8");
   const lines = raw.split(/\r?\n/);
 
@@ -300,7 +382,7 @@ async function main() {
     const line = lines[index];
     if (!line) continue;
 
-    const phaseMatch = line.match(PHASE_RE);
+    const phaseMatch = line.match(PERF_PHASE_RE);
     if (phaseMatch) {
       context.phase = phaseMatch[1];
     }
@@ -314,39 +396,50 @@ async function main() {
     const shotMatch = line.match(SHOT_LINE_RE);
     if (!shotMatch) continue;
 
+    const shotPlannerTokens = parseKeyValuePairs(shotMatch[2]);
+    const positionAtPredictionTime = parseVec3(stripOuterParens(shotPlannerTokens.get("positionAtPredictionTime") ?? ""));
+    const predictedPosition = parseMaybeVec3(shotPlannerTokens.get("predictedPosition"));
+    const positionAfterWait = parseMaybeVec3(shotPlannerTokens.get("positionAfterWait"));
+    const predictionError = parseMaybeVec3(shotPlannerTokens.get("predictionError"));
+    const confidence = parseMaybeNumber(shotPlannerTokens.get("confidence"));
+    const shotPlanner: MovementSample["shotPlanner"] = {
+      startTick: Number(shotMatch[1]),
+      tickDuration: Number(shotPlannerTokens.get("tickDuration") ?? "0"),
+      confidence,
+      positionAtPredictionTime,
+      predictedPosition,
+      positionAfterWait,
+      entityYawDegrees: parseMaybeNumber(shotPlannerTokens.get("entityYawDegrees")),
+      actualVelocityPerTick: parseMaybeVec3(shotPlannerTokens.get("actualVelocityPerTick")),
+      movementAnalysis: parseMovementAnalysis(shotPlannerTokens.get("movementAnalysis")),
+      predictionError,
+      trackedHistoryAtPredictionTime: parseTrackedInfo(shotPlannerTokens.get("trackedHistoryAtPredictionTime")),
+      trackedHistoryAfterWait: parseTrackedInfo(shotPlannerTokens.get("trackedHistoryAfterWait")),
+    };
+
+    const replaySnapshotRaw = shotPlannerTokens.get("replaySnapshot");
+    const replaySnapshot = replaySnapshotRaw && replaySnapshotRaw !== "null"
+      ? JSON.parse(replaySnapshotRaw) as ShotPlannerReplaySnapshot
+      : null;
+
+    const distanceError =
+      predictedPosition && positionAfterWait
+        ? computeDistanceError(predictedPosition, positionAfterWait)
+        : null;
+
     const sample: MovementSample = {
       line: index + 1,
       phase: context.phase,
       chatTick: context.chatTick,
-      startTick: Number(shotMatch[1]),
-      tickDuration: Number(shotMatch[2]),
-      start: parseVec3(shotMatch[3]),
-      predicted: parseVec3(shotMatch[4]),
-      confidence: parseNumber(shotMatch[5]),
-      actual: parseVec3(shotMatch[6]),
-      yawDeg: parseNumber(shotMatch[7]),
-      actualLastV: parseVec3(shotMatch[8]),
-      actualRelativeDelta: parseVec3Tuple(shotMatch[9]),
-      radial: parseNumber(shotMatch[10]),
-      tangential: parseNumber(shotMatch[11]),
-      angleDeg: parseNumber(shotMatch[12]),
-      predDelta: parseVec3(shotMatch[13]),
-      trackedInfoStart: parseTrackedInfo(shotMatch[14] ?? shotMatch[16]),
-      trackedInfoEnd: parseTrackedInfo(shotMatch[15]),
-      trackedInfo: parseTrackedInfo(shotMatch[14] ?? shotMatch[16]),
-      distanceError: 0,
-      errorDelta: [0, 0, 0],
+      shotPlanner,
+      replaySnapshot,
+      derived: {
+        distanceError,
+      },
       raw: line,
     };
 
-    sample.errorDelta = [
-      sample.predicted[0] - sample.actual[0],
-      sample.predicted[1] - sample.actual[1],
-      sample.predicted[2] - sample.actual[2],
-    ];
-    sample.distanceError = computeDistanceError(sample.predicted, sample.actual);
-
-    if (args.phase && sample.phase !== args.phase) continue;
+    if (options.phase && sample.phase !== options.phase) continue;
     samples.push(sample);
   }
 
@@ -362,35 +455,52 @@ async function main() {
     timeline,
   };
 
-  await fs.writeFile(outputPath, JSON.stringify(extracted, null, args.pretty ? 2 : 0));
+  await fs.writeFile(outputPath, JSON.stringify(extracted, null, options.pretty === false ? 0 : 2));
 
-  console.log(
-    `parsed ${samples.length} shot-planner samples (${timeline.length} timeline segments) from ${path.basename(inputPath)} -> ${path.basename(outputPath)}`
-  );
-  console.log(`phases: ${extracted.source.phases.join(", ") || "none"}`);
-  if (samples.length > 0) {
-    const first = samples[0];
-    const last = samples[samples.length - 1];
+  if (options.verbose !== false) {
     console.log(
-      `first tick=${first.startTick} confidence=${first.confidence.toFixed(4)} actual=${first.actual.join(", ")} predicted=${first.predicted.join(", ")}`
+      `parsed ${samples.length} shot-planner samples (${timeline.length} timeline segments) from ${path.basename(inputPath)} -> ${path.basename(outputPath)}`
     );
-    console.log(
-      `last tick=${last.startTick} confidence=${last.confidence.toFixed(4)} actual=${last.actual.join(", ")} predicted=${last.predicted.join(", ")}`
-    );
+    console.log(`phases: ${extracted.source.phases.join(", ") || "none"}`);
+    if (samples.length > 0) {
+      const first = samples[0];
+      const last = samples[samples.length - 1];
+      console.log(
+        `first tick=${first.shotPlanner.startTick} confidence=${(first.shotPlanner.confidence ?? 0).toFixed(4)} actual=${(first.shotPlanner.positionAfterWait ?? first.shotPlanner.positionAtPredictionTime).join(", ")} predicted=${(first.shotPlanner.predictedPosition ?? first.shotPlanner.positionAtPredictionTime).join(", ")}`
+      );
+      console.log(
+        `last tick=${last.shotPlanner.startTick} confidence=${(last.shotPlanner.confidence ?? 0).toFixed(4)} actual=${(last.shotPlanner.positionAfterWait ?? last.shotPlanner.positionAtPredictionTime).join(", ")} predicted=${(last.shotPlanner.predictedPosition ?? last.shotPlanner.positionAtPredictionTime).join(", ")}`
+      );
+    }
+    if (timeline.length > 0) {
+      const firstSegment = timeline[0];
+      const lastSegment = timeline[timeline.length - 1];
+      console.log(
+        `first segment tick=${firstSegment.startTick}-${firstSegment.endTick} age=${firstSegment.ageTicks} pos=${firstSegment.position.join(", ")} delta=${firstSegment.deltaFromPrevious.join(", ")}`
+      );
+      console.log(
+        `last segment tick=${lastSegment.startTick}-${lastSegment.endTick} age=${lastSegment.ageTicks} pos=${lastSegment.position.join(", ")} delta=${lastSegment.deltaFromPrevious.join(", ")}`
+      );
+    }
   }
-  if (timeline.length > 0) {
-    const firstSegment = timeline[0];
-    const lastSegment = timeline[timeline.length - 1];
-    console.log(
-      `first segment tick=${firstSegment.startTick}-${firstSegment.endTick} age=${firstSegment.ageTicks} pos=${firstSegment.position.join(", ")} delta=${firstSegment.deltaFromPrevious.join(", ")}`
-    );
-    console.log(
-      `last segment tick=${lastSegment.startTick}-${lastSegment.endTick} age=${lastSegment.ageTicks} pos=${lastSegment.position.join(", ")} delta=${lastSegment.deltaFromPrevious.join(", ")}`
-    );
-  }
+
+  return extracted;
 }
 
-main().catch(error => {
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
-  process.exitCode = 1;
-});
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const inputPath = path.resolve(process.cwd(), args.input);
+  const outputPath = path.resolve(process.cwd(), args.output);
+  await extractMovementSamples(inputPath, outputPath, {
+    phase: args.phase,
+    pretty: args.pretty,
+    verbose: true,
+  });
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch(error => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

@@ -37,7 +37,8 @@
         "prepare": "npm run build",
         "prepublish": "npm run build",
         "test": "tsx --test test/**/*.test.ts",
-        "extract:movement": "tsx scripts/extract-movement-samples.ts"
+        "extract:movement": "tsx scripts/extract-movement-samples.ts",
+        "analyze:movement": "tsx scripts/analyze-movement-log.ts"
     },
     "dependencies": {
         "@nxg-org/mineflayer-physics-util": "link:C:\\Users\\owner\\Documents\\github\\mineflayer-physics-utils",

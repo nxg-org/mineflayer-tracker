@@ -147,6 +147,27 @@ function applyEntityDefaults(entity: any, position: Vec3) {
   entity.flying = entity.flying ?? false;
 }
 
+function seedPhysicsContextFromEntity(ctx: any, entity: any) {
+  ctx.state.onGround = entity.onGround;
+  ctx.state.lastOnGround = entity.lastOnGround ?? entity.onGround;
+  ctx.state.supportingBlockPos = entity.supportingBlockPos ?? null;
+  ctx.state.isInWater = entity.isInWater ?? false;
+  ctx.state.isUnderWater = entity.isUnderWater ?? false;
+  ctx.state.isInLava = entity.isInLava ?? false;
+  ctx.state.isUnderLava = entity.isUnderLava ?? false;
+  ctx.state.isInWeb = entity.isInWeb ?? false;
+  ctx.state.isCollidedHorizontally = entity.isCollidedHorizontally ?? false;
+  ctx.state.isCollidedHorizontallyMinor = entity.isCollidedHorizontallyMinor ?? false;
+  ctx.state.isCollidedVertically = entity.isCollidedVertically ?? false;
+  ctx.state.swimming = entity.swimming ?? false;
+  ctx.state.sprinting = entity.sprinting ?? false;
+  ctx.state.crouching = entity.crouching ?? false;
+  ctx.state.fallFlying = entity.fallFlying ?? false;
+  ctx.state.elytraFlying = entity.elytraFlying ?? false;
+  ctx.state.canFly = entity.canFly ?? false;
+  ctx.state.flying = entity.flying ?? false;
+}
+
 export function createReplayBot(options: {
   botPosition?: Vec3;
   targetPosition?: Vec3;
@@ -156,7 +177,7 @@ export function createReplayBot(options: {
   targetOnGround?: boolean;
   floorY?: number;
 } = {}) {
-  const world = createFlatWorld(options.floorY ?? 0);
+  const world = createFlatWorld(options.floorY ?? 4);
   const bot = new ReplayBotImpl(world);
 
   const observer = new Entity(1);
@@ -178,11 +199,20 @@ export function createReplayBot(options: {
 
   physicsUtilLoader(bot as unknown as Bot);
 
+  const originalGetPhysicsCtx = bot.physicsUtil.getPhysicsCtx.bind(bot.physicsUtil);
+  bot.physicsUtil.getPhysicsCtx = (...args: any[]) => {
+    const ctx = originalGetPhysicsCtx(...args);
+    const entity = args[1] ?? bot.target;
+    seedPhysicsContextFromEntity(ctx, entity);
+    return ctx;
+  };
+
   return bot as unknown as Bot & ReplayBotFields;
 }
 
 export function stepReplayTick(bot: Bot & ReplayBotFields, frame: ReplayControlFrame = {}) {
   const ctx = bot.physicsUtil.getPhysicsCtx(bot.physicsUtil.engine, bot.target);
+  seedPhysicsContextFromEntity(ctx, bot.target);
   ctx.state.control = makeControlFrame(frame);
 
   if (typeof frame.yaw === "number") ctx.state.yaw = frame.yaw;

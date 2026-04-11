@@ -21,6 +21,7 @@ const DEFAULT_CONFIG = {
 };
 
 type TrackingInfo = { position: Vec3; velocity: Vec3; age: number; duration: number };
+type Vec3Tuple = [number, number, number];
 type VelocitySample = {
   velocity: Vec3;
   planarSpeed: number;
@@ -43,7 +44,33 @@ export type CurvaturePrediction = {
   confidence: number;
 };
 
-export type EntityTrackerCurvatureConfig = Partial<typeof DEFAULT_CONFIG>;
+export type EntityTrackerCurvatureConfig = Partial<typeof DEFAULT_CONFIG> & {
+  debugReplayLogging?: boolean;
+};
+
+type TrackingInfoSnapshot = {
+  age?: number;
+  duration?: number;
+  position: Vec3Tuple;
+  velocity: Vec3Tuple;
+};
+
+type ShotPlannerReplaySnapshot = {
+  entityId: number;
+  ticksAhead: number;
+  currentPosition: Vec3Tuple;
+  currentVelocity: Vec3Tuple;
+  currentYaw: number;
+  currentPitch: number;
+  currentOnGround: boolean;
+  tracking: {
+    initialAge: number;
+    avgVel: Vec3Tuple;
+    tickInfo: TrackingInfoSnapshot[];
+  } | null;
+  predictedPosition: Vec3Tuple | null;
+  confidence: number | null;
+};
 
 export type TrackingData = {
   [entityId: number]: { tracking: boolean; info: { initialAge: number; avgVel: Vec3; tickInfo: TrackingInfo[] } };
@@ -51,7 +78,7 @@ export type TrackingData = {
 
 export class EntityTrackerCurvature {
   public trackingData: TrackingData = {};
-  public debugLogging = false;
+  public debugReplayLogging = false;
 
   private _enabled = false;
   private _tickAge = 0;
@@ -74,17 +101,13 @@ export class EntityTrackerCurvature {
 
   constructor(private bot: Bot, config: EntityTrackerCurvatureConfig = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.debugReplayLogging = config.debugReplayLogging ?? false;
 
     if (!this.bot.physicsUtil) {
       this.bot.loadPlugin(physicsUtilPlugin as any);
     }
 
     this.enabled = true;
-  }
-
-  private logDebug(event: string, details: Record<string, unknown>, override = false) {
-    if (!this.debugLogging && !override) return;
-    console.log(`[EntityTrackerCurvature:${event}]`, details);
   }
 
   private formatVec3(vec: Vec3): string {
@@ -118,6 +141,42 @@ export class EntityTrackerCurvature {
   private getYawDegrees(yaw: number): string {
     if (!Number.isFinite(yaw)) return "null";
     return ((yaw * 180) / Math.PI).toFixed(1);
+  }
+
+  private vec3ToTuple(vec: Vec3): Vec3Tuple {
+    return [vec.x, vec.y, vec.z];
+  }
+
+  private cloneTrackingInfoSnapshot(entityId: number): TrackingInfoSnapshot[] {
+    return this.cloneTrackedInfo(entityId).map(entry => ({
+      age: entry.age,
+      duration: entry.duration,
+      position: this.vec3ToTuple(entry.position),
+      velocity: this.vec3ToTuple(entry.velocity),
+    }));
+  }
+
+  private buildShotPlannerReplaySnapshot(entity: Entity, ticksAhead: number, predicted: CurvaturePrediction | null): ShotPlannerReplaySnapshot {
+    const entry = this.trackingData[entity.id];
+    const tickInfo = this.cloneTrackingInfoSnapshot(entity.id);
+    return {
+      entityId: entity.id,
+      ticksAhead,
+      currentPosition: this.vec3ToTuple(entity.position),
+      currentVelocity: this.vec3ToTuple(entity.velocity),
+      currentYaw: entity.yaw,
+      currentPitch: entity.pitch,
+      currentOnGround: entity.onGround,
+      tracking: entry && tickInfo.length > 0
+        ? {
+            initialAge: entry.info.initialAge,
+            avgVel: this.vec3ToTuple(entry.info.avgVel),
+            tickInfo,
+          }
+        : null,
+      predictedPosition: predicted?.position ? this.vec3ToTuple(predicted.position) : null,
+      confidence: predicted?.confidence ?? null,
+    };
   }
 
   private clamp01(value: number): number {
@@ -422,6 +481,8 @@ export class EntityTrackerCurvature {
   }
 
   public logActualTargetPositionAfterTicks(target: Entity, ticks: number, predicted: CurvaturePrediction | null, startTick: number): void {
+    if (!this.debugReplayLogging) return;
+
     const targetId = target.id;
     const lastLoggedTick = this.lastLoggedPredictionTick.get(targetId);
     if (lastLoggedTick === startTick) return;
@@ -429,6 +490,7 @@ export class EntityTrackerCurvature {
     this.lastLoggedPredictionTick.set(targetId, startTick);
     const startPos = target.position.clone();
     const trackedInfoAtPredictionStart = this.cloneTrackedInfo(targetId);
+    const replaySnapshot = this.buildShotPlannerReplaySnapshot(target, ticks, predicted);
 
     void this.bot.waitForTicks(Math.max(0, ticks)).then(() => {
       const currentTarget = this.bot.entities[targetId];
@@ -438,7 +500,8 @@ export class EntityTrackerCurvature {
           `[shot-planner:startTick=${startTick}] | confidence=${predicted?.confidence ?? "null"} | tickDuration=${ticks} | ` +
           `positionAtPredictionTime=${this.formatVec3(startPos)} | predictedPosition=${this.formatMaybeVec3(predicted?.position)} | ` +
           `positionAfterWait=null | entityYawDegrees=null | actualVelocityPerTick=null | movementAnalysis=null | predictionError=null | ` +
-          `trackedHistoryAtPredictionTime=${trackedHistoryAtPredictionTime} | trackedHistoryAfterWait=null`,
+          `trackedHistoryAtPredictionTime=${trackedHistoryAtPredictionTime} | trackedHistoryAfterWait=null | ` +
+          `replaySnapshot=${JSON.stringify(replaySnapshot)}`,
         );
         return;
       }
@@ -460,7 +523,8 @@ export class EntityTrackerCurvature {
           `positionAfterWait=${this.formatVec3(positionAfterWait)} | entityYawDegrees=${entityYawDegrees} | ` +
           `actualVelocityPerTick=${this.formatMaybeVec3(actualVelocityPerTick)} | movementAnalysis=${movementAnalysis} | ` +
           `predictionError=${this.formatMaybeVec3(predictionError)} | ` +
-          `trackedHistoryAtPredictionTime=${trackedHistoryAtPredictionTime} | trackedHistoryAfterWait=${trackedHistoryAfterWait}`,
+          `trackedHistoryAtPredictionTime=${trackedHistoryAtPredictionTime} | trackedHistoryAfterWait=${trackedHistoryAfterWait} | ` +
+          `replaySnapshot=${JSON.stringify(replaySnapshot)}`,
       );
     });
   }
@@ -596,10 +660,6 @@ export class EntityTrackerCurvature {
 
       return simCtx.state.pos.clone();
     } catch (error) {
-      this.logDebug("predict:curvature-physics-fallback", {
-        entityId: entity.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
       return null;
     }
   }
@@ -609,18 +669,23 @@ export class EntityTrackerCurvature {
     if (!entry) return null;
 
     const sanitizedTicks = Math.max(0, Math.floor(ticksAhead));
-    const currentPosition = entity.position.clone();
+      const currentPosition = entity.position.clone();
     if (sanitizedTicks === 0) {
-      return { position: currentPosition, confidence: 1 };
+      const result = { position: currentPosition, confidence: 1 };
+      return result;
     }
 
     // If entity is in a long static period, just predict it stays in place
     if (this.isInLongStaticPeriod(entry.info.tickInfo)) {
-      return { position: currentPosition, confidence: 0.95 };
+      const result = { position: currentPosition, confidence: 0.95 };
+      return result;
     }
 
     const features = this.deriveCurvatureFeatures(entry.info.tickInfo, entity.id);
-    if (!features) return { position: currentPosition, confidence: 0 };
+    if (!features) {
+      const result = { position: currentPosition, confidence: 0 };
+      return result;
+    }
     const observedSamples = this.buildVelocitySamples(entry.info.tickInfo);
     const { accelerationChanged } = this.getAccelerationAwareWindow(observedSamples, entity.id);
     const windowAge = entry.info.tickInfo.reduce((sum, sample) => sum + Math.max(1, sample.duration), 0);
@@ -645,28 +710,10 @@ export class EntityTrackerCurvature {
       accelerationChanged,
     });
 
-    this.logDebug("predict:start", {
-      entityId: entity.id,
-      ticksAhead: sanitizedTicks,
-      currentPosition: currentPosition.toString(),
-      planarVelocity: features.planarVelocity.toString(),
-      planarSpeed: features.planarSpeed,
-      headingYaw: features.headingYaw,
-      turnRate: features.turnRate,
-      planarAcceleration: features.planarAcceleration.toString(),
-      accelerationChanged: features.accelerationChanged,
-      verticalVelocity: features.verticalVelocity,
-      confidence,
-    });
-
     const predictedFromPhysics = this.predictWithCurvaturePhysics(entity, sanitizedTicks, features);
     if (predictedFromPhysics) {
-      this.logDebug("predict:end", {
-        entityId: entity.id,
-        predictedPosition: predictedFromPhysics.toString(),
-        confidence,
-      });
-      return { position: predictedFromPhysics, confidence };
+      const result = { position: predictedFromPhysics, confidence };
+      return result;
     }
 
     // Fallback: continue the local heading and rotate it by recent curvature
@@ -684,7 +731,8 @@ export class EntityTrackerCurvature {
       predicted.z += -Math.cos(yaw) * features.planarSpeed;
     }
 
-    return { position: predicted, confidence };
+    const result = { position: predicted, confidence };
+    return result;
   }
 
   public predictEntityPosition(entity: Entity, ticksAhead: number): Vec3 | null {
