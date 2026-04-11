@@ -1,104 +1,38 @@
-const fs = require("fs");
 
-const logPath = process.argv[2] || "output.log";
-const text = fs.readFileSync(logPath, "utf8");
-const lines = text.split(/\r?\n/);
-
-const shotPattern =
-  /\[shot-planner:startTick=(\d+)\].*?predicted=\(([-0-9.]+),\s*([-0-9.]+),\s*([-0-9.]+)\).*?confidence=([0-9.]+).*?actual=\(([-0-9.]+),\s*([-0-9.]+),\s*([-0-9.]+)\)/;
-
-const points = [];
-
+const fs = require('fs');
+const lines = fs.readFileSync('output.log', 'utf8').split(/\r?\n/);
+let state = '[no chat yet]';
+const groups = new Map();
+const chat = /\[chat:tick=(\d+)\] (.*)$/;
+const shot = /\[shot-planner:startTick=(\d+)\].*?confidence=([0-9.]+).*?actualRelativeDelta=move=\(([-0-9.]+),\s*([-0-9.]+)\)/;
 for (const line of lines) {
-  const match = line.match(shotPattern);
-  if (!match) continue;
-
-  const predicted = {
-    x: Number(match[2]),
-    y: Number(match[3]),
-    z: Number(match[4]),
-  };
-  const confidence = Number(match[5]);
-  const actual = {
-    x: Number(match[6]),
-    y: Number(match[7]),
-    z: Number(match[8]),
-  };
-
-  const dx = predicted.x - actual.x;
-  const dy = predicted.y - actual.y;
-  const dz = predicted.z - actual.z;
-  const distance = Math.hypot(dx, dy, dz);
-
-  points.push({
-    tick: Number(match[1]),
-    confidence,
-    distance,
-  });
-}
-
-if (points.length === 0) {
-  console.error(`No shot-planner lines matched in ${logPath}`);
-  process.exit(1);
-}
-
-function mean(values) {
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function pearson(xs, ys) {
-  const mx = mean(xs);
-  const my = mean(ys);
-  let num = 0;
-  let dx = 0;
-  let dy = 0;
-
-  for (let i = 0; i < xs.length; i++) {
-    const vx = xs[i] - mx;
-    const vy = ys[i] - my;
-    num += vx * vy;
-    dx += vx * vx;
-    dy += vy * vy;
+  const cm = line.match(chat);
+  if (cm) {
+    state = `tick ${cm[1]} | ${cm[2]}`;
+    if (!groups.has(state)) groups.set(state, []);
+    continue;
   }
-
-  return num / Math.sqrt(dx * dy || 1);
-}
-
-function quartileBuckets(items) {
-  const sorted = [...items].sort((a, b) => a.confidence - b.confidence);
-  const bucketSize = Math.ceil(sorted.length / 4);
-  const buckets = [];
-
-  for (let i = 0; i < sorted.length; i += bucketSize) {
-    buckets.push(sorted.slice(i, i + bucketSize));
+  const sm = line.match(shot);
+  if (sm) {
+    if (!groups.has(state)) groups.set(state, []);
+    const tick = Number(sm[1]);
+    const conf = Number(sm[2]);
+    const dx = Number(sm[3]);
+    const dz = Number(sm[4]);
+    const speed = Math.hypot(dx, dz);
+    groups.get(state).push({ tick, conf, speed });
   }
-
-  return buckets;
 }
-
-const confidences = points.map(p => p.confidence);
-const distances = points.map(p => p.distance);
-const corr = pearson(confidences, distances);
-const corrInv = pearson(confidences, distances.map(d => 1 / (1 + d)));
-
-console.log(`log=${logPath}`);
-console.log(`samples=${points.length}`);
-console.log(`confidence_vs_distance_pearson=${corr.toFixed(4)}`);
-console.log(`confidence_vs_inverse_distance_pearson=${corrInv.toFixed(4)}`);
-console.log("");
-
-const buckets = quartileBuckets(points);
-for (let i = 0; i < buckets.length; i++) {
-  const bucket = buckets[i];
-  const confs = bucket.map(p => p.confidence);
-  const dists = bucket.map(p => p.distance);
-  console.log(
-    `bucket_${i + 1}: count=${bucket.length} confidence_avg=${mean(confs).toFixed(4)} distance_avg=${mean(dists).toFixed(4)} confidence_min=${Math.min(...confs).toFixed(4)} confidence_max=${Math.max(...confs).toFixed(4)}`
-  );
-}
-
-console.log("");
-console.log("sample_points:");
-for (const point of points.slice(0, 10)) {
-  console.log(`tick=${point.tick} confidence=${point.confidence.toFixed(4)} distance=${point.distance.toFixed(4)}`);
+for (const [state, items] of groups) {
+  if (items.length < 4) continue;
+  const confs = items.map(x => x.conf);
+  const speeds = items.map(x => x.speed);
+  const avg = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
+  const min = arr => Math.min(...arr);
+  const max = arr => Math.max(...arr);
+  console.log('STATE', state);
+  console.log(' count=', items.length, 'conf_avg=', avg(confs).toFixed(4), 'conf_min=', min(confs).toFixed(4), 'conf_max=', max(confs).toFixed(4), 'speed_avg=', avg(speeds).toFixed(4));
+  console.log(' first=', items[0].tick, items[0].conf.toFixed(4), items[0].speed.toFixed(4));
+  console.log(' last =', items[items.length - 1].tick, items[items.length - 1].conf.toFixed(4), items[items.length - 1].speed.toFixed(4));
+  console.log('""');
 }
